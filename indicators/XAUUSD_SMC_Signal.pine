@@ -1,0 +1,405 @@
+//@version=5
+// ============================================================================
+//  XAUUSD SMC SIGNAL BOT  v2.0  (Smart Money Concepts)  -  Pine Script v5
+//  Tipe : INDICATOR (Signal only / NO auto-entry)
+//
+//  Fitur v2.0:
+//   1. Market Structure : Swing High/Low + label BOS & CHoCH (Bull/Bear)
+//   2. Order Block (OB)  : Demand/Supply + filter Imbalance valid
+//   3. Fair Value Gap    : Deteksi FVG/Imbalance + mitigasi
+//   4. Signal Engine     : CHoCH/BOS -> retrace -> mitigasi OB / isi FVG
+//   5. HTF Bias Filter   : Saring sinyal sesuai tren timeframe besar (NEW)
+//   6. Liquidity EQH/EQL : Deteksi Equal Highs / Equal Lows (NEW)
+//   7. Auto SL / TP      : Entry, Stop Loss, Take Profit otomatis (NEW)
+//   8. Alert             : alertcondition + alert() untuk Webhook Telegram
+// ============================================================================
+indicator("XAUUSD SMC Signal Bot [v2]", shorttitle="XAU SMC v2", overlay=true,
+     max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+// ============================================================================
+//  INPUTS
+// ============================================================================
+grpMS   = "1. Market Structure"
+swingLen = input.int(10, "Swing Length (Pivot L/R)", minval=2, maxval=50, group=grpMS,
+     tooltip="Bar kiri & kanan untuk validasi Swing High/Low. M3/M5: 5-8, M15/H1: 10-15.")
+showMS   = input.bool(true, "Tampilkan Label BOS / CHoCH", group=grpMS)
+
+grpOB   = "2. Order Block (OB)"
+showOB        = input.bool(true,  "Tampilkan Order Block", group=grpOB)
+obRequireFVG  = input.bool(true,  "OB wajib punya Imbalance/FVG di depannya", group=grpOB)
+obMax         = input.int(6, "Maksimal OB ditampilkan", minval=1, maxval=20, group=grpOB)
+bullOBColor   = input.color(color.new(color.green, 78), "Bullish OB (Demand)", group=grpOB)
+bearOBColor   = input.color(color.new(color.red,   78), "Bearish OB (Supply)", group=grpOB)
+
+grpFVG  = "3. Fair Value Gap (FVG)"
+showFVG     = input.bool(true, "Tampilkan FVG / Imbalance", group=grpFVG)
+fvgMax      = input.int(10, "Maksimal FVG ditampilkan", minval=1, maxval=30, group=grpFVG)
+bullFVGColor= input.color(color.new(color.teal,   80), "Bullish FVG", group=grpFVG)
+bearFVGColor= input.color(color.new(color.orange, 80), "Bearish FVG", group=grpFVG)
+
+grpSig  = "4. Signal Engine"
+useOB   = input.bool(true, "Sinyal dari mitigasi OB",  group=grpSig)
+useFVG  = input.bool(true, "Sinyal dari mitigasi FVG", group=grpSig)
+oncePerBarClose = input.bool(true, "Sinyal hanya pada bar close (anti-repaint)", group=grpSig)
+
+grpHTF  = "5. HTF Bias Filter (Multi-Timeframe)"
+useHTF    = input.bool(true,  "Aktifkan filter Higher Timeframe", group=grpHTF,
+     tooltip="BUY hanya jika HTF bullish, SELL hanya jika HTF bearish.")
+htfTf     = input.timeframe("60", "Higher Timeframe", group=grpHTF,
+     tooltip="Contoh: chart M5 -> pakai 60 (H1). Chart M15 -> pakai 240 (H4).")
+htfEmaLen = input.int(50, "Panjang EMA Bias HTF", minval=5, group=grpHTF)
+
+grpLiq  = "6. Liquidity (Equal Highs / Lows)"
+showLiq   = input.bool(true, "Tampilkan EQH / EQL", group=grpLiq)
+eqAtrFac  = input.float(0.10, "Toleransi EqH/EqL (x ATR)", minval=0.01, step=0.01, group=grpLiq,
+     tooltip="Dua swing dianggap 'equal' jika selisihnya <= ATR * faktor ini.")
+
+grpTP   = "7. Auto SL / TP"
+showLevels = input.bool(true,  "Tampilkan label Entry/SL/TP", group=grpTP)
+rr         = input.float(2.0,  "Risk : Reward (TP)", minval=0.5, step=0.5, group=grpTP)
+slBuffer   = input.float(1.0,  "Buffer SL (harga, $ untuk Gold)", minval=0.0, step=0.1, group=grpTP)
+
+grpStat = "8. Win-rate Counter"
+showStats = input.bool(true, "Tampilkan statistik Win/Loss", group=grpStat,
+     tooltip="Mini-backtest: lacak tiap sinyal apakah kena TP (Win) atau SL (Loss) lebih dulu.")
+
+// ============================================================================
+//  USER-DEFINED TYPES
+// ============================================================================
+type Zone
+    box   bx
+    float top
+    float bot
+    bool  bull
+    bool  mitigated
+
+type Trade
+    bool  isBuy
+    float sl
+    float tp
+
+var array<Zone>  obList  = array.new<Zone>()
+var array<Zone>  fvgList = array.new<Zone>()
+var array<Trade> trades  = array.new<Trade>()
+var int wins   = 0
+var int losses = 0
+
+// ============================================================================
+//  1. MARKET STRUCTURE  (Swing High / Low -> BOS & CHoCH)
+// ============================================================================
+ph = ta.pivothigh(high, swingLen, swingLen)
+pl = ta.pivotlow(low,  swingLen, swingLen)
+
+var float swingHigh = na
+var float swingLow  = na
+var int   trend     = 0        // 1 = Bullish, -1 = Bearish
+var bool  brokeHigh = false
+var bool  brokeLow  = false
+
+if not na(ph)
+    swingHigh := ph
+    brokeHigh := false
+if not na(pl)
+    swingLow := pl
+    brokeLow := false
+
+bool bosBull   = false
+bool bosBear   = false
+bool chochBull = false
+bool chochBear = false
+
+if not na(swingHigh) and close > swingHigh and not brokeHigh
+    if trend == -1
+        chochBull := true
+    else
+        bosBull := true
+    trend     := 1
+    brokeHigh := true
+
+if not na(swingLow) and close < swingLow and not brokeLow
+    if trend == 1
+        chochBear := true
+    else
+        bosBear := true
+    trend     := -1
+    brokeLow  := true
+
+if showMS
+    if bosBull
+        label.new(bar_index, low,  "BOS ▲",   style=label.style_label_up,   color=color.new(color.green,  0), textcolor=color.white, size=size.small)
+    if chochBull
+        label.new(bar_index, low,  "CHoCH ▲", style=label.style_label_up,   color=color.new(color.lime,   0), textcolor=color.black, size=size.small)
+    if bosBear
+        label.new(bar_index, high, "BOS ▼",   style=label.style_label_down, color=color.new(color.red,    0), textcolor=color.white, size=size.small)
+    if chochBear
+        label.new(bar_index, high, "CHoCH ▼", style=label.style_label_down, color=color.new(color.orange, 0), textcolor=color.black, size=size.small)
+
+// ============================================================================
+//  6. LIQUIDITY : EQUAL HIGHS / EQUAL LOWS
+// ============================================================================
+atr = ta.atr(14)
+eqThresh = atr * eqAtrFac
+
+var float lastPH    = na
+var int   lastPHbar = na
+var float lastPL    = na
+var int   lastPLbar = na
+
+if not na(ph)
+    int curBar = bar_index - swingLen
+    if showLiq and not na(lastPH) and math.abs(ph - lastPH) <= eqThresh
+        line.new(lastPHbar, lastPH, curBar, ph, color=color.new(color.yellow, 0), style=line.style_dotted, width=1)
+        label.new(curBar, ph, "EQH 💧", style=label.style_label_down, color=color.new(color.yellow, 70), textcolor=color.yellow, size=size.tiny)
+    lastPH    := ph
+    lastPHbar := curBar
+
+if not na(pl)
+    int curBarL = bar_index - swingLen
+    if showLiq and not na(lastPL) and math.abs(pl - lastPL) <= eqThresh
+        line.new(lastPLbar, lastPL, curBarL, pl, color=color.new(color.fuchsia, 0), style=line.style_dotted, width=1)
+        label.new(curBarL, pl, "EQL 💧", style=label.style_label_up, color=color.new(color.fuchsia, 70), textcolor=color.fuchsia, size=size.tiny)
+    lastPL    := pl
+    lastPLbar := curBarL
+
+// ============================================================================
+//  5. HTF BIAS FILTER (Multi-Timeframe)
+// ============================================================================
+htfClose = request.security(syminfo.tickerid, htfTf, close,                 lookahead=barmerge.lookahead_off)
+htfEma   = request.security(syminfo.tickerid, htfTf, ta.ema(close, htfEmaLen), lookahead=barmerge.lookahead_off)
+htfBull  = htfClose > htfEma
+htfBear  = htfClose < htfEma
+
+// ============================================================================
+//  HELPER: cari index Order Block & cek imbalance
+// ============================================================================
+f_bullOBIndex() =>
+    int idx = na
+    for i = 1 to 30
+        if na(idx) and close[i] < open[i]
+            idx := i
+    idx
+
+f_bearOBIndex() =>
+    int idx = na
+    for i = 1 to 30
+        if na(idx) and close[i] > open[i]
+            idx := i
+    idx
+
+f_hasBullImb(n) =>
+    bool found = false
+    for j = 0 to n
+        if low[j] > high[j + 2]
+            found := true
+    found
+
+f_hasBearImb(n) =>
+    bool found = false
+    for j = 0 to n
+        if high[j] < low[j + 2]
+            found := true
+    found
+
+// ============================================================================
+//  SIGNAL FLAGS + penampung zona pemicu (untuk SL/TP)
+// ============================================================================
+bool  buyRaw     = false
+bool  sellRaw    = false
+float sigZoneTop = na
+float sigZoneBot = na
+
+// ============= 2A. UPDATE & MITIGASI ORDER BLOCK ===========================
+if array.size(obList) > 0
+    for i = 0 to array.size(obList) - 1
+        Zone z = array.get(obList, i)
+        if not z.mitigated
+            box.set_right(z.bx, bar_index)
+            bool touch = low <= z.top and high >= z.bot
+            if touch
+                z.mitigated := true
+                box.set_bgcolor(z.bx, color.new(color.gray, 85))
+                box.set_border_color(z.bx, color.new(color.gray, 60))
+                if z.bull and trend == 1 and useOB
+                    buyRaw     := true
+                    sigZoneTop := z.top
+                    sigZoneBot := z.bot
+                if (not z.bull) and trend == -1 and useOB
+                    sellRaw    := true
+                    sigZoneTop := z.top
+                    sigZoneBot := z.bot
+
+// ============= 2B. UPDATE & MITIGASI FVG ===================================
+if array.size(fvgList) > 0
+    for i = 0 to array.size(fvgList) - 1
+        Zone z = array.get(fvgList, i)
+        if not z.mitigated
+            box.set_right(z.bx, bar_index)
+            bool fill = low <= z.top and high >= z.bot
+            if fill
+                z.mitigated := true
+                box.set_bgcolor(z.bx, color.new(color.gray, 90))
+                if z.bull and trend == 1 and useFVG
+                    buyRaw     := true
+                    sigZoneTop := z.top
+                    sigZoneBot := z.bot
+                if (not z.bull) and trend == -1 and useFVG
+                    sellRaw    := true
+                    sigZoneTop := z.top
+                    sigZoneBot := z.bot
+
+// ============= 3. BUAT ORDER BLOCK BARU saat break =========================
+if showOB and (bosBull or chochBull)
+    int obi = f_bullOBIndex()
+    if not na(obi)
+        bool okImb = (not obRequireFVG) or f_hasBullImb(obi)
+        if okImb
+            box bx = box.new(bar_index[obi], high[obi], bar_index, low[obi],
+                 border_color=color.new(color.green, 40), bgcolor=bullOBColor)
+            array.push(obList, Zone.new(bx, high[obi], low[obi], true, false))
+
+if showOB and (bosBear or chochBear)
+    int obi2 = f_bearOBIndex()
+    if not na(obi2)
+        bool okImb2 = (not obRequireFVG) or f_hasBearImb(obi2)
+        if okImb2
+            box bx2 = box.new(bar_index[obi2], high[obi2], bar_index, low[obi2],
+                 border_color=color.new(color.red, 40), bgcolor=bearOBColor)
+            array.push(obList, Zone.new(bx2, high[obi2], low[obi2], false, false))
+
+while array.size(obList) > obMax
+    Zone old = array.shift(obList)
+    box.delete(old.bx)
+
+// ============= 4. DETEKSI FVG BARU (pola 3-candle) =========================
+if showFVG and low > high[2]
+    box fb = box.new(bar_index[1], low, bar_index, high[2], border_color=na, bgcolor=bullFVGColor)
+    array.push(fvgList, Zone.new(fb, low, high[2], true, false))
+
+if showFVG and high < low[2]
+    box fb2 = box.new(bar_index[1], low[2], bar_index, high, border_color=na, bgcolor=bearFVGColor)
+    array.push(fvgList, Zone.new(fb2, low[2], high, false, false))
+
+while array.size(fvgList) > fvgMax
+    Zone oldf = array.shift(fvgList)
+    box.delete(oldf.bx)
+
+// ============================================================================
+//  GATING : terapkan filter HTF Bias
+// ============================================================================
+buySignal  = buyRaw  and (not useHTF or htfBull)
+sellSignal = sellRaw and (not useHTF or htfBear)
+
+// ============================================================================
+//  7. AUTO SL / TP
+// ============================================================================
+fmt = "#.##"
+float entry = na
+float sl    = na
+float tp    = na
+
+if buySignal
+    entry := close
+    sl    := sigZoneBot - slBuffer
+    tp    := entry + rr * (entry - sl)
+if sellSignal
+    entry := close
+    sl    := sigZoneTop + slBuffer
+    tp    := entry - rr * (sl - entry)
+
+if showLevels and (buySignal or sellSignal)
+    string lvTxt = (buySignal ? "BUY" : "SELL") +
+         "\nEntry: " + str.tostring(entry, fmt) +
+         "\nSL: "    + str.tostring(sl, fmt) +
+         "\nTP: "    + str.tostring(tp, fmt)
+    label.new(bar_index, buySignal ? low : high, lvTxt,
+         style = buySignal ? label.style_label_up : label.style_label_down,
+         color = buySignal ? color.new(color.green, 20) : color.new(color.red, 20),
+         textcolor = color.white, size = size.small)
+
+// ============================================================================
+//  WIN-RATE COUNTER : resolusi trade (mini-backtest)
+// ============================================================================
+// Cek trade terbuka dulu memakai high/low bar ini. Bila SL & TP tersentuh di
+// bar yang sama -> dihitung LOSS (konservatif). Trade baru dicatat SETELAH
+// pengecekan ini agar bar entry tidak langsung di-resolve.
+if showStats and array.size(trades) > 0
+    int k = 0
+    while k < array.size(trades)
+        Trade t = array.get(trades, k)
+        bool resolved = false
+        if t.isBuy
+            if low <= t.sl
+                losses := losses + 1
+                resolved := true
+            else if high >= t.tp
+                wins := wins + 1
+                resolved := true
+        else
+            if high >= t.sl
+                losses := losses + 1
+                resolved := true
+            else if low <= t.tp
+                wins := wins + 1
+                resolved := true
+        if resolved
+            array.remove(trades, k)
+        else
+            k := k + 1
+
+if showStats and buySignal
+    array.push(trades, Trade.new(true,  sl, tp))
+if showStats and sellSignal
+    array.push(trades, Trade.new(false, sl, tp))
+
+// ============================================================================
+//  8. VISUAL SINYAL + PANEL INFO
+// ============================================================================
+plotshape(buySignal,  title="BUY Signal",  style=shape.triangleup,
+     location=location.belowbar, color=color.new(color.lime, 0), size=size.small)
+plotshape(sellSignal, title="SELL Signal", style=shape.triangledown,
+     location=location.abovebar, color=color.new(color.red, 0),  size=size.small)
+
+var table info = table.new(position.top_right, 2, 4, border_width=1, frame_color=color.gray, frame_width=1)
+if barstate.islast
+    string tTxt = trend == 1 ? "BULLISH ▲" : trend == -1 ? "BEARISH ▼" : "RANGING"
+    color  tCol = trend == 1 ? color.green : trend == -1 ? color.red : color.gray
+    table.cell(info, 0, 0, "LTF",  text_color=color.white, bgcolor=color.new(color.black, 20), text_size=size.small)
+    table.cell(info, 1, 0, tTxt,   text_color=color.white, bgcolor=tCol, text_size=size.small)
+    string hTxt = htfBull ? "BULL ▲" : htfBear ? "BEAR ▼" : "-"
+    color  hCol = htfBull ? color.teal : htfBear ? color.maroon : color.gray
+    table.cell(info, 0, 1, "HTF",  text_color=color.white, bgcolor=color.new(color.black, 20), text_size=size.small)
+    table.cell(info, 1, 1, hTxt,   text_color=color.white, bgcolor=hCol, text_size=size.small)
+    int   total = wins + losses
+    float wRate = total > 0 ? 100.0 * wins / total : 0.0
+    color wCol  = total == 0 ? color.gray : wRate >= 50 ? color.green : color.red
+    table.cell(info, 0, 2, "Trade", text_color=color.white, bgcolor=color.new(color.black, 20), text_size=size.small)
+    table.cell(info, 1, 2, str.tostring(total) + " (" + str.tostring(wins) + "W/" + str.tostring(losses) + "L)", text_color=color.white, bgcolor=color.new(color.black, 20), text_size=size.small)
+    table.cell(info, 0, 3, "Win%",  text_color=color.white, bgcolor=color.new(color.black, 20), text_size=size.small)
+    table.cell(info, 1, 3, str.tostring(wRate, "#.#") + "%", text_color=color.white, bgcolor=wCol, text_size=size.small)
+
+// ============================================================================
+//  9. ALERTS (Webhook Telegram)
+// ============================================================================
+alertcondition(buySignal,  title="XAUUSD SMC - BUY",
+     message="[⚠️ XAUUSD SMC SIGNAL]\nType: BUY\nPrice: {{close}}\nTimeframe: {{interval}}\nNote: Harga telah memitigasi Zone OB/FVG (searah HTF). Cek chart untuk konfirmasi manual.")
+
+alertcondition(sellSignal, title="XAUUSD SMC - SELL",
+     message="[⚠️ XAUUSD SMC SIGNAL]\nType: SELL\nPrice: {{close}}\nTimeframe: {{interval}}\nNote: Harga telah memitigasi Zone OB/FVG (searah HTF). Cek chart untuk konfirmasi manual.")
+
+alertFreq = oncePerBarClose ? alert.freq_once_per_bar_close : alert.freq_once_per_bar
+
+if buySignal
+    alert("[⚠️ XAUUSD SMC SIGNAL]\nType: BUY\nPrice: " + str.tostring(close, fmt) +
+         "\nTimeframe: " + timeframe.period +
+         "\nEntry: " + str.tostring(entry, fmt) +
+         "\nSL: "    + str.tostring(sl, fmt) +
+         "\nTP: "    + str.tostring(tp, fmt) + "  (RR 1:" + str.tostring(rr) + ")" +
+         "\nNote: Mitigasi Zone OB/FVG searah HTF. Konfirmasi manual sebelum entry.", alertFreq)
+
+if sellSignal
+    alert("[⚠️ XAUUSD SMC SIGNAL]\nType: SELL\nPrice: " + str.tostring(close, fmt) +
+         "\nTimeframe: " + timeframe.period +
+         "\nEntry: " + str.tostring(entry, fmt) +
+         "\nSL: "    + str.tostring(sl, fmt) +
+         "\nTP: "    + str.tostring(tp, fmt) + "  (RR 1:" + str.tostring(rr) + ")" +
+         "\nNote: Mitigasi Zone OB/FVG searah HTF. Konfirmasi manual sebelum entry.", alertFreq)
