@@ -36,10 +36,16 @@ Indikator **TradingView (Pine Script v6)** berbasis **Smart Money Concepts (SMC)
 xauusd-entry-plan/
 ├── README.md
 ├── indicators/
-│   └── XAUUSD_SMC_Signal.pine    # Script indikator SMC (Pine v6)
+│   └── XAUUSD_SMC_Signal.pine        # Indikator SMC TradingView (Pine v6)
+├── expert/
+│   └── XAUUSD_SMC_SnR_Signal.mq5     # EA sinyal MQL5 (SMC + SnR, Telegram)
 └── docs/
-    └── entry-plan.md             # Checklist & rencana entry SMC
+    └── entry-plan.md                 # Checklist & rencana entry SMC
 ```
+
+> **Dua produk dalam satu repo:**
+> - **Pine Script** (`indicators/`) → indikator untuk **TradingView**, alert via Webhook.
+> - **MQL5 EA** (`expert/`) → signal bot untuk **MetaTrader 5**, notifikasi via Telegram WebRequest. Lihat bagian [EA MQL5](#-ea-mql5-metatrader-5--sinyal-smc--snr) di bawah.
 
 ---
 
@@ -131,4 +137,62 @@ Entry: 2345.60
 SL: 2342.10
 TP: 2352.60  (RR 1:2)
 Note: Mitigasi Zone OB/FVG searah HTF. Konfirmasi manual sebelum entry.
+```
+
+---
+
+## 🤖 EA MQL5 (MetaTrader 5) — Sinyal SMC & SnR
+
+File: [`expert/XAUUSD_SMC_SnR_Signal.mq5`](expert/XAUUSD_SMC_SnR_Signal.mq5) — **signal-only** (TIDAK auto-entry/auto-order). Mengirim notifikasi ke Telegram langsung dari MT5 via `WebRequest`.
+
+### Karakter EA (revisi v3.0)
+
+| Aspek | Keterangan |
+|-------|-----------|
+| **Dua strategi TERPISAH** | **Jalur A (SMC)**: BOS/CHoCH anti-repaint (close candle) → retrace → mitigasi **Order Block ber-FVG**. **Jalur B (SnR)**: level Support/Resistance horizontal kuat → **rejection** valid (Buy di Support, Sell di Resistance). Notifikasi ditandai sebagai `SMC` atau `SnR` — tidak digabung. |
+| **24 jam nonstop** | **Tanpa session filter.** Bot mencari peluang selama market emas buka. |
+| **TP Dinamis** | TP otomatis ke **key-level berikutnya**: SMC → swing high/low terdekat searah; SnR → garis SnR berikutnya. **RR dihitung otomatis** (mis. SL 40 pips, jarak TP 80 pips → ditulis `1:2`). |
+| **SL 30–60 pips** | <30 pips → digenapkan 30. >60 pips → entry digeser (SMC: 50% OB; SnR: lebih dekat ke sumbu level). Jika tetap >60 → **sinyal dibatalkan**. |
+| **Anti-repaint** | Evaluasi hanya pada **bar tertutup** (shift=1) dan diproses sekali per bar baru. |
+
+### ⚙️ Cara Pasang di MetaTrader 5
+
+1. Buka **MetaEditor** (F4 di MT5) → **File → Open Data Folder** → masuk `MQL5/Experts/`.
+2. Salin `XAUUSD_SMC_SnR_Signal.mq5` ke folder tersebut.
+3. Di MetaEditor, buka file lalu klik **Compile** (F7). Pastikan 0 error.
+4. Di MT5, buka chart **XAUUSD**, drag EA dari **Navigator → Expert Advisors** ke chart.
+5. Centang **Allow Algo Trading** (untuk WebRequest), lalu isi parameter input.
+
+### 🔑 WAJIB: Allowlist WebRequest (agar Telegram jalan)
+
+`WebRequest` diblokir secara default. Aktifkan dulu:
+
+1. MT5 → **Tools → Options → Expert Advisors**.
+2. Centang **"Allow WebRequest for listed URL"**.
+3. Tambahkan URL: `https://api.telegram.org`
+4. Klik **OK**.
+
+> Tanpa langkah ini, EA akan mencetak error `WebRequest gagal (err 4060/5203...)` di tab Experts.
+
+### 🔧 Setup Telegram (input EA)
+
+| Input | Isi dengan |
+|-------|-----------|
+| `InpBotToken` | Token dari **@BotFather** (mis. `123456:ABC-xyz...`) |
+| `InpChatID` | Chat ID tujuan (dapatkan via `https://api.telegram.org/bot<TOKEN>/getUpdates`) |
+| `InpEnableSMC` / `InpEnableSnR` | Aktif/nonaktifkan tiap jalur strategi |
+| `InpPipSize` | `0.10` untuk XAUUSD (10 pips = $1.00) — sesuaikan dgn broker |
+| `InpMinSLPips` / `InpMaxSLPips` | `30` / `60` (default) |
+| `InpMinRR` | RR minimal agar sinyal dikirim (default `1.0`) |
+
+### 📨 Contoh Pesan Telegram (EA)
+
+```
+🚨 [XAUUSD LIVE SIGNAL] 🚨
+Strategi: SMC
+Aksi: BUY
+Harga Entry: 2345.60
+Target SL: 35.0 pips (2342.10)
+Target TP: 2352.60
+Dinamis RR: 1:2.00
 ```
