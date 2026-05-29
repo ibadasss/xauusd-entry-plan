@@ -97,6 +97,7 @@ var array<Trade> trades  = array.new<Trade>()
 var int wins   = 0
 var int losses = 0
 var int lastSigBar = na
+var int firstSigTime = na
 
 // =================== DATA INTRABAR (untuk resolusi Win/Loss) ===============
 aLow  = request.security_lower_tf(syminfo.tickerid, lowerTf, low)
@@ -368,9 +369,13 @@ if showLevels and (buySignal or sellSignal)
 if buySignal
     array.push(trades, Trade.new(true,  sl, tp))
     lastSigBar := bar_index
+    if na(firstSigTime)
+        firstSigTime := time
 if sellSignal
     array.push(trades, Trade.new(false, sl, tp))
     lastSigBar := bar_index
+    if na(firstSigTime)
+        firstSigTime := time
 
 // =================== 8. VISUAL SINYAL + PANEL ==============================
 plotshape(buySignal,  title="BUY Signal",  style=shape.triangleup,
@@ -378,7 +383,7 @@ plotshape(buySignal,  title="BUY Signal",  style=shape.triangleup,
 plotshape(sellSignal, title="SELL Signal", style=shape.triangledown,
      location=location.abovebar, color=color.new(color.red, 0),  size=size.small)
 
-var table info = table.new(position.top_right, 2, 5, border_width=1, frame_color=color.gray, frame_width=1)
+var table info = table.new(position.top_right, 2, 7, border_width=1, frame_color=color.gray, frame_width=1)
 if barstate.islast
     string tTxt = trend == 1 ? "BULLISH ▲" : trend == -1 ? "BEARISH ▼" : "RANGING"
     color  tCol = trend == 1 ? color.green : trend == -1 ? color.red : color.gray
@@ -397,6 +402,12 @@ if barstate.islast
     table.cell(info, 1, 3, str.tostring(total) + " (" + str.tostring(wins) + "W/" + str.tostring(losses) + "L)", text_color=color.white, bgcolor=color.new(color.black, 20), text_size=size.small)
     table.cell(info, 0, 4, "Win%",  text_color=color.white, bgcolor=color.new(color.black, 20), text_size=size.small)
     table.cell(info, 1, 4, str.tostring(wRate, "#.#") + "%", text_color=color.white, bgcolor=wCol, text_size=size.small)
+    string startTxt = na(firstSigTime) ? "-" : str.format_time(firstSigTime, "yyyy-MM-dd HH:mm", sessTz)
+    string endTxt   = str.format_time(time, "yyyy-MM-dd HH:mm", sessTz)
+    table.cell(info, 0, 5, "Mulai", text_color=color.white, bgcolor=color.new(color.black, 20), text_size=size.small)
+    table.cell(info, 1, 5, startTxt, text_color=color.white, bgcolor=color.new(color.black, 40), text_size=size.small)
+    table.cell(info, 0, 6, "Akhir", text_color=color.white, bgcolor=color.new(color.black, 20), text_size=size.small)
+    table.cell(info, 1, 6, endTxt, text_color=color.white, bgcolor=color.new(color.black, 40), text_size=size.small)
 
 // =================== 9. ALERTS (Webhook Telegram) ==========================
 alertcondition(buySignal,  title="XAUUSD SMC - BUY",  message="[⚠️ XAUUSD SMC SIGNAL]\nType: BUY\nPrice: {{close}}\nTimeframe: {{interval}}\nNote: Harga telah memitigasi Zone OB/FVG (searah HTF). Cek chart untuk konfirmasi manual.")
