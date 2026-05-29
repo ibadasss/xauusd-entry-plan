@@ -12,6 +12,7 @@
 //|   - TP DINAMIS ke key-level berikutnya; RR dihitung otomatis.    |
 //|   - SL konsisten 30-60 pips (geser entry bila terlalu lebar).    |
 //|   - Deduplikasi: anti kirim sinyal sama berulang di zona sama.   |
+//|   - Tes koneksi Telegram di OnInit() (untuk cek token/chat id).  |
 //|   - Notifikasi Telegram via WebRequest.                          |
 //+------------------------------------------------------------------+
 #property copyright "XAUUSD Entry Plan"
@@ -60,6 +61,7 @@ input bool   InpUseTelegram    = true;            // Kirim ke Telegram
 input string InpBotToken       = "";              // Token bot (dari @BotFather)
 input string InpChatID         = "";              // Chat ID tujuan
 input bool   InpAlsoAlert      = true;            // Tampilkan Alert() terminal juga
+input bool   InpSendTestOnInit = true;            // Kirim pesan TES saat EA dipasang/refresh
 
 //==================================================================
 //  KONSTANTA & STATE GLOBAL
@@ -104,6 +106,7 @@ string DirText(int dir){ return (dir==DIR_BUY ? "BUY" : "SELL"); }
 
 //+------------------------------------------------------------------+
 //| Kirim pesan ke Telegram via WebRequest                           |
+//| return true bila HTTP 200 (Telegram menerima pesan).             |
 //+------------------------------------------------------------------+
 bool SendTelegram(const string text)
 {
@@ -125,14 +128,23 @@ bool SendTelegram(const string text)
 
    string headers = "Content-Type: application/x-www-form-urlencoded\r\n";
    ResetLastError();
-   int res = WebRequest("POST", url, headers, 5000, post, result, resultHeaders);
-   if(res == -1)
+   int code = WebRequest("POST", url, headers, 5000, post, result, resultHeaders);
+   if(code == -1)
    {
       int err = GetLastError();
-      PrintFormat("WebRequest gagal (err %d). Pastikan URL https://api.telegram.org sudah di-allowlist di Tools>Options>Expert Advisors.", err);
+      PrintFormat("WebRequest GAGAL (err %d). Allowlist 'https://api.telegram.org' di Tools>Options>Expert Advisors & aktifkan Algo Trading.", err);
       return false;
    }
-   return true;
+
+   string body = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
+   if(code == 200)
+   {
+      PrintFormat("Telegram OK (HTTP 200). Respons: %s", body);
+      return true;
+   }
+   // Respons selain 200 biasanya token/chat id salah -> tampilkan body API utk diagnosa
+   PrintFormat("Telegram DITOLAK (HTTP %d). Periksa Token/Chat ID. Respons: %s", code, body);
+   return false;
 }
 
 //+------------------------------------------------------------------+
@@ -154,6 +166,23 @@ void NotifySignal(const string strat, int dir, double entry, double slPrice,
    if(InpAlsoAlert) Alert(strat + " " + DirText(dir) + " @ " + DoubleToString(entry,_Digits) +
                           "  SL " + DoubleToString(slPips,1) + "p  RR 1:" + DoubleToString(rr,2));
    Print(msg);
+}
+
+//+------------------------------------------------------------------+
+//| Pesan TES koneksi Telegram (dipanggil dari OnInit)               |
+//+------------------------------------------------------------------+
+void SendConnectionTest()
+{
+   string msg =
+      "\xF0\x9F\x9A\x80 [XAUUSD BOT TEST KONEKSI] \xF0\x9F\x9A\x80\n" +
+      "Status: Bot Berhasil Aktif di MT5!\n" +
+      "Pesan: Sistem SMC & SnR siap berpatroli hari Senin.\n" +
+      "Waktu Lokal: " + TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS);
+
+   bool ok = SendTelegram(msg);
+   if(InpAlsoAlert)
+      Alert(ok ? "TES TELEGRAM: BERHASIL terkirim! Cek HP Anda."
+               : "TES TELEGRAM: GAGAL. Lihat tab Experts untuk detail (token/chat id/allowlist).");
 }
 
 //==================================================================
@@ -576,6 +605,11 @@ int OnInit()
                (InpEnableSMC?"ON":"OFF"), (InpEnableSnR?"ON":"OFF"), EnumToString(_Period));
    if(InpUseTelegram && (InpBotToken=="" || InpChatID==""))
       Print("PERINGATAN: Token/Chat ID Telegram kosong. Isi input agar notifikasi terkirim.");
+
+   // --- TES KONEKSI: kirim pesan instan ke Telegram saat EA dipasang/refresh ---
+   if(InpUseTelegram && InpSendTestOnInit)
+      SendConnectionTest();
+
    return(INIT_SUCCEEDED);
 }
 
