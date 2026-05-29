@@ -1,20 +1,23 @@
 //@version=6
 // ============================================================================
-//  XAUUSD SMC SIGNAL BOT  v2.3  (Smart Money Concepts)  -  Pine Script v6
+//  XAUUSD SMC SIGNAL BOT  v2.4  (Smart Money Concepts + SnR)  - Pine Script v6
 //  Tipe : INDICATOR (Signal only / NO auto-entry)
 //
-//  PENYARING KETAT (v2.3) untuk menaikkan winrate di XAU/USD:
-//   1. STRICT TF ALIGNMENT : BUY hanya jika HTF & LTF SAMA-SAMA bullish,
-//                            SELL hanya jika keduanya bearish. Counter-trend dicoret.
-//   2. LIQUIDITY SWEEP      : CHoCH baru dianggap valid jika DIDAHULUI sweep
-//                            (ekor menembus swing lalu close balik ke dalam range).
+//  PENYARING & MANAJEMEN (v2.4):
+//   1. STRICT TF ALIGNMENT : BUY hanya jika HTF & LTF sama-sama bullish (SELL inverse).
+//   2. LIQUIDITY SWEEP      : CHoCH valid hanya jika didahului sweep (anti-inducement).
 //   3. SESSION FILTER       : alert hanya 13:00-22:00 WIB (London + New York).
-//   4. RISK 30-60 PIPS      : SL min 30 pips, max 60 pips. Jika OB terlalu lebar,
-//                            entry digeser ke 50% OB (equilibrium). Masih >60 -> coret.
+//   4. RISK 30-60 PIPS      : SL min 30 / max 60 pips; OB lebar -> entry 50% (equilibrium).
+//   5. OB + SnR CONFLUENCE   : sinyal hanya jika OB tepat di level SnR (RBS untuk BUY,
+//                              SBR untuk SELL).                              [BARU]
+//   6. LIQUIDITY POOL (EQH/EQL): wajib ada sweep pool Equal High/Low retail
+//                              sebelum konfirmasi entry di OB.               [BARU]
+//   7. BEP NOTIFICATION      : alert "Move SL to BEP" saat harga +1R atau
+//                              menyentuh SnR LTF terdekat.                   [BARU]
 //
 //  Catatan v6: pesan multi-baris pakai "\n" dalam SATU baris fisik; guard na ada.
 // ============================================================================
-indicator("XAUUSD SMC Signal Bot [v2.3]", shorttitle="XAU SMC v2.3", overlay=true,
+indicator("XAUUSD SMC Signal Bot [v2.4]", shorttitle="XAU SMC v2.4", overlay=true,
      max_boxes_count=500, max_lines_count=500, max_labels_count=500)
 
 // =============================== INPUTS ====================================
@@ -44,14 +47,12 @@ oncePerBarClose = input.bool(true, "Sinyal hanya pada bar close (anti-repaint)",
 grpHTF  = "5. HTF Bias & Strict Alignment"
 useHTF        = input.bool(true,  "Aktifkan filter Higher Timeframe", group=grpHTF)
 useStrictAlign= input.bool(true,  "STRICT: HTF & LTF wajib searah", group=grpHTF,
-     tooltip="BUY hanya jika HTF bullish DAN LTF (struktur) bullish. SELL kebalikannya. Counter-trend dicoret.")
-htfTf         = input.timeframe("60", "Higher Timeframe", group=grpHTF,
-     tooltip="Contoh: chart M5 -> pakai 60 (H1). Chart M15 -> pakai 240 (H4).")
+     tooltip="BUY hanya jika HTF bullish DAN LTF (struktur) bullish. SELL kebalikannya.")
+htfTf         = input.timeframe("60", "Higher Timeframe", group=grpHTF)
 htfEmaLen     = input.int(50, "Panjang EMA Bias HTF", minval=5, group=grpHTF)
 
 grpSweep = "6. Liquidity Sweep (Anti-Inducement)"
-useSweep      = input.bool(true, "CHoCH wajib didahului Liquidity Sweep", group=grpSweep,
-     tooltip="CHoCH bullish valid jika ada sweep sisi sell (low menembus swing low lalu close balik di atasnya). Bearish kebalikannya.")
+useSweep      = input.bool(true, "CHoCH wajib didahului Liquidity Sweep", group=grpSweep)
 sweepLookback = input.int(12, "Max jarak sweep -> CHoCH (bar)", minval=1, maxval=60, group=grpSweep)
 
 grpLiq  = "7. Liquidity (Equal Highs / Lows)"
@@ -65,28 +66,43 @@ slBuffer   = input.float(1.0,  "Buffer SL (harga, $ untuk Gold)", minval=0.0, st
 
 grpRisk = "9. Risk Management (Pips 30-60)"
 pipValue  = input.float(0.10, "Nilai 1 Pip (harga)", minval=0.001, step=0.01, group=grpRisk,
-     tooltip="XAU/USD: 1 pip = 0.10 harga (10 pips = $1.00). Sesuaikan dengan konvensi broker Anda.")
-minPips   = input.float(30.0, "SL Minimal (pips)", minval=1.0, step=1.0, group=grpRisk,
-     tooltip="Jika SL teknikal < nilai ini, SL dibulatkan naik agar aman dari noise/spread.")
-maxPips   = input.float(60.0, "SL Maksimal (pips)", minval=1.0, step=1.0, group=grpRisk,
-     tooltip="Jika SL teknikal > nilai ini: terapkan mode di bawah.")
+     tooltip="XAU/USD: 1 pip = 0.10 harga (10 pips = $1.00).")
+minPips   = input.float(30.0, "SL Minimal (pips)", minval=1.0, step=1.0, group=grpRisk)
+maxPips   = input.float(60.0, "SL Maksimal (pips)", minval=1.0, step=1.0, group=grpRisk)
 maxMode   = input.string("Geser Entry ke 50% (Opsi B)", "Aksi saat SL > Maksimal", group=grpRisk,
      options=["Geser Entry ke 50% (Opsi B)", "Abaikan Sinyal (Opsi A)"])
 
-grpQual = "10. Signal Quality (Anti Over-Trading)"
+grpSnR  = "10. OB + SnR Confluence (RBS/SBR)"
+useSnR     = input.bool(true, "Sinyal wajib confluence OB + SnR", group=grpSnR,
+     tooltip="BUY: OB harus berimpit level Resistance-jadi-Support (RBS). SELL: Support-jadi-Resistance (SBR).")
+snrTolPips = input.float(15.0, "Toleransi confluence (pips)", minval=1.0, step=1.0, group=grpSnR)
+maxSnR     = input.int(12, "Maksimal level SnR disimpan", minval=2, maxval=40, group=grpSnR)
+showSnR    = input.bool(true, "Gambar garis SnR", group=grpSnR)
+
+grpPool = "11. Liquidity Pool (Equal H/L Sweep)"
+useLiqPool      = input.bool(true, "Wajib sweep pool Equal H/L sebelum entry", group=grpPool,
+     tooltip="BUY butuh sweep Equal Lows (double bottom retail) lebih dulu. SELL butuh sweep Equal Highs.")
+liqPoolLookback = input.int(20, "Max jarak sweep pool -> entry (bar)", minval=1, maxval=80, group=grpPool)
+
+grpBEP  = "12. Breakeven (BEP) Notification"
+useBEP   = input.bool(true, "Aktifkan notifikasi Move SL to BEP", group=grpBEP)
+bepUse1R = input.bool(true, "Trigger saat profit +1R (RR 1:1)", group=grpBEP)
+bepUseSnR= input.bool(true, "Trigger saat sentuh SnR LTF terdekat", group=grpBEP)
+
+grpQual = "13. Signal Quality (Anti Over-Trading)"
 maxZoneAge   = input.int(50, "Max umur zona untuk sinyal (bar)", minval=1, group=grpQual)
 cooldownBars = input.int(10, "Cooldown antar sinyal (bar)", minval=0, group=grpQual)
 useOneTrade  = input.bool(true, "Satu posisi aktif dalam satu waktu", group=grpQual)
 
-grpStat = "11. Win-rate Counter"
+grpStat = "14. Win-rate Counter"
 showStats   = input.bool(true, "Tampilkan statistik Win/Loss", group=grpStat)
 useIntrabar = input.bool(true, "Resolusi akurat via data intrabar", group=grpStat)
 lowerTf     = input.timeframe("1", "Intrabar Timeframe", group=grpStat)
 
-grpSess = "12. Session Filter (WIB)"
+grpSess = "15. Session Filter (WIB)"
 useSession = input.bool(true, "Hanya sinyal saat sesi aktif", group=grpSess)
 sessStr    = input.session("1300-2200", "Jendela sesi aktif (London + NY)", group=grpSess,
-     tooltip="Default 13:00-22:00 WIB. Ubah jika ingin sesi lain.")
+     tooltip="Default 13:00-22:00 WIB.")
 sessTz     = input.string("Asia/Jakarta", "Timezone sesi", group=grpSess,
      options=["Asia/Jakarta", "Europe/London", "America/New_York", "Asia/Tokyo", "UTC"])
 
@@ -101,16 +117,27 @@ type Zone
 
 type Trade
     bool  isBuy
+    float entry
     float sl
     float tp
+    bool  bep
 
 var array<Zone>  obList  = array.new<Zone>()
 var array<Zone>  fvgList = array.new<Zone>()
 var array<Trade> trades  = array.new<Trade>()
+var array<float> snrLvl  = array.new<float>()
+var array<bool>  snrRes  = array.new<bool>()
+var array<line>  snrLine = array.new<line>()
 var int wins   = 0
 var int losses = 0
 var int lastSigBar = na
 var int firstSigTime = na
+
+// Liquidity pool (Equal H/L) state
+var float eqlLevel    = na
+var int   eqlSweptBar = na
+var float eqhLevel    = na
+var int   eqhSweptBar = na
 
 // =================== DATA INTRABAR (untuk resolusi Win/Loss) ===============
 aLow  = request.security_lower_tf(syminfo.tickerid, lowerTf, low)
@@ -155,8 +182,6 @@ if not na(swingLow) and close < swingLow and not brokeLow
     brokeLow  := true
 
 // =================== 2. LIQUIDITY SWEEP DETECTION ==========================
-// Sweep sell-side : low menembus swing low lalu close balik DI ATAS swing low.
-// Sweep buy-side  : high menembus swing high lalu close balik DI BAWAH swing high.
 var int sweepLowBar  = na
 var int sweepHighBar = na
 
@@ -168,11 +193,9 @@ if not na(swingHigh) and high > swingHigh and close < swingHigh
 bool sweepRecentLow  = not na(sweepLowBar)  and (bar_index - sweepLowBar)  <= sweepLookback
 bool sweepRecentHigh = not na(sweepHighBar) and (bar_index - sweepHighBar) <= sweepLookback
 
-// CHoCH valid hanya bila didahului sweep yang sesuai
 bool chochBullV = chochBull and (not useSweep or sweepRecentLow)
 bool chochBearV = chochBear and (not useSweep or sweepRecentHigh)
 
-// --- Label Struktur (CHoCH hanya bila valid) ---
 if showMS
     if bosBull
         label.new(bar_index, low,  "BOS ▲",   style=label.style_label_up,   color=color.new(color.green,  0), textcolor=color.white, size=size.small)
@@ -183,7 +206,7 @@ if showMS
     if chochBearV
         label.new(bar_index, high, "CHoCH ▼", style=label.style_label_down, color=color.new(color.orange, 0), textcolor=color.black, size=size.small)
 
-// =================== 7. LIQUIDITY : EQUAL HIGHS / LOWS =====================
+// =================== 7. LIQUIDITY : EQUAL HIGHS / LOWS + POOL ==============
 atr = ta.atr(14)
 eqThresh = atr * eqAtrFac
 
@@ -194,19 +217,36 @@ var int   lastPLbar = na
 
 if not na(ph)
     int curBar = bar_index - swingLen
-    if showLiq and not na(lastPH) and math.abs(ph - lastPH) <= nz(eqThresh)
-        line.new(lastPHbar, lastPH, curBar, ph, color=color.new(color.yellow, 0), style=line.style_dotted, width=1)
-        label.new(curBar, ph, "EQH 💧", style=label.style_label_down, color=color.new(color.yellow, 70), textcolor=color.yellow, size=size.tiny)
+    if not na(lastPH) and math.abs(ph - lastPH) <= nz(eqThresh)
+        if showLiq
+            line.new(lastPHbar, lastPH, curBar, ph, color=color.new(color.yellow, 0), style=line.style_dotted, width=1)
+            label.new(curBar, ph, "EQH 💧", style=label.style_label_down, color=color.new(color.yellow, 70), textcolor=color.yellow, size=size.tiny)
+        // Pool Equal Highs terbentuk -> likuiditas di atasnya, reset status sweep
+        eqhLevel    := math.max(ph, lastPH)
+        eqhSweptBar := na
     lastPH    := ph
     lastPHbar := curBar
 
 if not na(pl)
     int curBarL = bar_index - swingLen
-    if showLiq and not na(lastPL) and math.abs(pl - lastPL) <= nz(eqThresh)
-        line.new(lastPLbar, lastPL, curBarL, pl, color=color.new(color.fuchsia, 0), style=line.style_dotted, width=1)
-        label.new(curBarL, pl, "EQL 💧", style=label.style_label_up, color=color.new(color.fuchsia, 70), textcolor=color.fuchsia, size=size.tiny)
+    if not na(lastPL) and math.abs(pl - lastPL) <= nz(eqThresh)
+        if showLiq
+            line.new(lastPLbar, lastPL, curBarL, pl, color=color.new(color.fuchsia, 0), style=line.style_dotted, width=1)
+            label.new(curBarL, pl, "EQL 💧", style=label.style_label_up, color=color.new(color.fuchsia, 70), textcolor=color.fuchsia, size=size.tiny)
+        // Pool Equal Lows terbentuk -> likuiditas di bawahnya, reset status sweep
+        eqlLevel    := math.min(pl, lastPL)
+        eqlSweptBar := na
     lastPL    := pl
     lastPLbar := curBarL
+
+// Deteksi sweep pool (celupan menembus level retail)
+if not na(eqlLevel) and low < eqlLevel
+    eqlSweptBar := bar_index
+if not na(eqhLevel) and high > eqhLevel
+    eqhSweptBar := bar_index
+
+bool eqlSweptRecent = not na(eqlSweptBar) and (bar_index - eqlSweptBar) <= liqPoolLookback
+bool eqhSweptRecent = not na(eqhSweptBar) and (bar_index - eqhSweptBar) <= liqPoolLookback
 
 // ===================== 5. HTF BIAS FILTER ==================================
 htfClose = request.security(syminfo.tickerid, htfTf, close,                    lookahead=barmerge.lookahead_off)
@@ -214,14 +254,13 @@ htfEma   = request.security(syminfo.tickerid, htfTf, ta.ema(close, htfEmaLen), l
 htfBull  = not na(htfClose) and not na(htfEma) and htfClose > htfEma
 htfBear  = not na(htfClose) and not na(htfEma) and htfClose < htfEma
 
-// LTF bias dari struktur
 bool ltfBull = trend == 1
 bool ltfBear = trend == -1
 
-// ===================== 12. SESSION FILTER ==================================
+// ===================== 15. SESSION FILTER ==================================
 inSession = not useSession or not na(time(timeframe.period, sessStr, sessTz))
 
-// =================== HELPER: OB index & cek imbalance ======================
+// =================== HELPERS ===============================================
 f_bullOBIndex() =>
     int idx = na
     for i = 1 to 30
@@ -250,6 +289,50 @@ f_hasBearImb(n) =>
             found := true
     found
 
+// Tambah level SnR (dedupe + trim + garis). isRes=true bila berasal dari pivot HIGH.
+f_addSnR(float lvl, bool isRes) =>
+    float tol = snrTolPips * (pipValue <= 0 ? 0.1 : pipValue)
+    bool dup = false
+    if array.size(snrLvl) > 0
+        for i = 0 to array.size(snrLvl) - 1
+            if math.abs(array.get(snrLvl, i) - lvl) <= tol
+                dup := true
+    if not dup
+        array.push(snrLvl, lvl)
+        array.push(snrRes, isRes)
+        color lc = showSnR ? (isRes ? color.new(color.orange, 50) : color.new(color.blue, 50)) : na
+        line ln = line.new(bar_index, lvl, bar_index + 1, lvl, color=lc, extend=extend.right, style=line.style_dotted, width=1)
+        array.push(snrLine, ln)
+        while array.size(snrLvl) > maxSnR
+            array.shift(snrLvl)
+            array.shift(snrRes)
+            line oldln = array.shift(snrLine)
+            line.delete(oldln)
+
+// Confluence: ada level SnR (tipe wantRes) yang berimpit zona OB [bot..top].
+f_snrConfluence(float top, float bot, bool wantRes) =>
+    bool found = false
+    float tol = snrTolPips * (pipValue <= 0 ? 0.1 : pipValue)
+    if array.size(snrLvl) > 0
+        for i = 0 to array.size(snrLvl) - 1
+            float lv = array.get(snrLvl, i)
+            bool isr = array.get(snrRes, i)
+            if isr == wantRes and lv >= (bot - tol) and lv <= (top + tol)
+                found := true
+    found
+
+// Apakah harga menyentuh SnR LTF searah profit (untuk BEP)?
+f_touchSnR(bool isBuy, float hi, float lo, float entryPx) =>
+    bool touched = false
+    if array.size(snrLvl) > 0
+        for i = 0 to array.size(snrLvl) - 1
+            float lv = array.get(snrLvl, i)
+            if isBuy and lv > entryPx and hi >= lv
+                touched := true
+            if (not isBuy) and lv < entryPx and lo <= lv
+                touched := true
+    touched
+
 // Resolusi 1 trade: 1 = TP (Win), -1 = SL (Loss), 0 = belum selesai.
 f_resolve(bool isBuy, float slv, float tpv) =>
     int res = 0
@@ -273,8 +356,7 @@ f_resolve(bool isBuy, float slv, float tpv) =>
             res := 1
     res
 
-// =================== MODUL RISK 30-60 PIPS (Opsi B) ========================
-// Kembali: [ok, entry, sl, tp, slPips]
+// MODUL RISK 30-60 PIPS (Opsi B). Kembali: [ok, entry, sl, tp, slPips]
 f_risk(bool isBuy, float px, float zTop, float zBot) =>
     float pv = pipValue <= 0 ? 0.1 : pipValue
     float e  = px
@@ -282,25 +364,28 @@ f_risk(bool isBuy, float px, float zTop, float zBot) =>
     float dist = math.abs(e - s)
     float pips = dist / pv
     bool  ok = true
-    // --- MAKSIMAL SL ---
     if pips > maxPips
         if maxMode == "Abaikan Sinyal (Opsi A)"
             ok := false
         else
-            // Opsi B: geser entry ke 50% OB (equilibrium)
             e    := (zTop + zBot) / 2.0
             s    := isBuy ? zBot - slBuffer : zTop + slBuffer
             dist := math.abs(e - s)
             pips := dist / pv
             if pips > maxPips
                 ok := false
-    // --- MINIMAL SL ---
     if ok and pips < minPips
         dist := minPips * pv
         s    := isBuy ? e - dist : e + dist
         pips := minPips
     float t = ok ? (isBuy ? e + rr * dist : e - rr * dist) : na
     [ok, e, s, t, pips]
+
+// =================== POPULASI LEVEL SnR ====================================
+if not na(ph)
+    f_addSnR(ph, true)
+if not na(pl)
+    f_addSnR(pl, false)
 
 // ============== SIGNAL FLAGS + penampung zona untuk SL/TP ==================
 bool  buyRaw     = false
@@ -385,11 +470,26 @@ while array.size(fvgList) > fvgMax
     Zone oldf = array.shift(fvgList)
     box.delete(oldf.bx)
 
-// =================== RESOLUSI TRADE TERBUKA (sebelum sinyal baru) ==========
+// =================== RESOLUSI TRADE + BEP CHECK ============================
+bool  bepEvent = false
+bool  bepIsBuy = false
+float bepEntry = na
+
 if array.size(trades) > 0
     int k = 0
     while k < array.size(trades)
         Trade t = array.get(trades, k)
+        // --- BEP : profit +1R atau sentuh SnR LTF terdekat ---
+        if useBEP and not t.bep
+            float oneR     = t.isBuy ? t.entry + (t.entry - t.sl) : t.entry - (t.sl - t.entry)
+            bool  reached1R= bepUse1R and (t.isBuy ? high >= oneR : low <= oneR)
+            bool  snrTouch = bepUseSnR and f_touchSnR(t.isBuy, high, low, t.entry)
+            if reached1R or snrTouch
+                t.bep    := true
+                bepEvent := true
+                bepIsBuy := t.isBuy
+                bepEntry := t.entry
+        // --- Resolusi Win/Loss ---
         int r = f_resolve(t.isBuy, t.sl, t.tp)
         if r == 1
             wins := wins + 1
@@ -400,17 +500,24 @@ if array.size(trades) > 0
         else
             k := k + 1
 
-// ===================== GATING : STRICT ALIGN + sesi + cooldown + 1-posisi ==
+bool bepBuy  = bepEvent and bepIsBuy
+bool bepSell = bepEvent and not bepIsBuy
+
+// ===================== GATING : SEMUA FILTER ===============================
 bool cooled    = na(lastSigBar) or (bar_index - lastSigBar) >= cooldownBars
 bool slotFree  = (not useOneTrade) or array.size(trades) == 0
 bool canSignal = inSession and cooled and slotFree
 
-// STRICT TF ALIGNMENT: HTF & LTF wajib searah (coret counter-trend)
 bool buyAlign  = useStrictAlign ? (htfBull and ltfBull) : (not useHTF or htfBull)
 bool sellAlign = useStrictAlign ? (htfBear and ltfBear) : (not useHTF or htfBear)
 
-bool buyPre  = buyRaw  and buyAlign  and canSignal
-bool sellPre = sellRaw and sellAlign and canSignal
+bool buyConf  = (not useSnR) or f_snrConfluence(sigZoneTop, sigZoneBot, true)
+bool sellConf = (not useSnR) or f_snrConfluence(sigZoneTop, sigZoneBot, false)
+bool buyLiq   = (not useLiqPool) or eqlSweptRecent
+bool sellLiq  = (not useLiqPool) or eqhSweptRecent
+
+bool buyPre  = buyRaw  and buyAlign  and canSignal and buyConf  and buyLiq
+bool sellPre = sellRaw and sellAlign and canSignal and sellConf and sellLiq
 
 // ========================= RISK MODULE -> SL/TP ============================
 fmt = "#.##"
@@ -436,7 +543,6 @@ if sellPre and not na(sigZoneTop) and not na(sigZoneBot)
     tp     := tt
     slPips := pp
 
-// SINYAL FINAL: lolos arah + sesi + cooldown + slot + risk valid
 bool buySignal  = buyPre  and riskOk
 bool sellSignal = sellPre and riskOk
 
@@ -444,25 +550,27 @@ if showLevels and (buySignal or sellSignal)
     string lvTxt = (buySignal ? "BUY" : "SELL") + "\nEntry: " + str.tostring(entry, fmt) + "\nSL: " + str.tostring(sl, fmt) + " (" + str.tostring(slPips, "#.#") + "p)" + "\nTP: " + str.tostring(tp, fmt)
     label.new(bar_index, buySignal ? low : high, lvTxt, style = buySignal ? label.style_label_up : label.style_label_down, color = buySignal ? color.new(color.green, 20) : color.new(color.red, 20), textcolor = color.white, size = size.small)
 
-// =================== CATAT TRADE BARU + update cooldown ====================
+// =================== CATAT TRADE BARU + cooldown ==========================
 if buySignal
-    array.push(trades, Trade.new(true,  sl, tp))
+    array.push(trades, Trade.new(true,  entry, sl, tp, false))
     lastSigBar := bar_index
     if na(firstSigTime)
         firstSigTime := time
 if sellSignal
-    array.push(trades, Trade.new(false, sl, tp))
+    array.push(trades, Trade.new(false, entry, sl, tp, false))
     lastSigBar := bar_index
     if na(firstSigTime)
         firstSigTime := time
 
-// =================== VISUAL SINYAL + PANEL ================================
+// =================== VISUAL SINYAL + BEP MARK + PANEL =====================
 plotshape(buySignal,  title="BUY Signal",  style=shape.triangleup,
      location=location.belowbar, color=color.new(color.lime, 0), size=size.small)
 plotshape(sellSignal, title="SELL Signal", style=shape.triangledown,
      location=location.abovebar, color=color.new(color.red, 0),  size=size.small)
+plotshape(bepEvent, title="BEP", style=shape.square, location=location.abovebar,
+     color=color.new(color.blue, 0), size=size.tiny, text="BEP")
 
-var table info = table.new(position.top_right, 2, 7, border_width=1, frame_color=color.gray, frame_width=1)
+var table info = table.new(position.top_right, 2, 8, border_width=1, frame_color=color.gray, frame_width=1)
 if barstate.islast
     string tTxt = trend == 1 ? "BULLISH ▲" : trend == -1 ? "BEARISH ▼" : "RANGING"
     color  tCol = trend == 1 ? color.green : trend == -1 ? color.red : color.gray
@@ -475,28 +583,35 @@ if barstate.islast
     bool aligned = (htfBull and ltfBull) or (htfBear and ltfBear)
     table.cell(info, 0, 2, "Align/Sesi", text_color=color.white, bgcolor=color.new(color.black, 20), text_size=size.small)
     table.cell(info, 1, 2, (aligned ? "OK" : "NO") + " / " + (inSession ? "BUKA" : "TUTUP"), text_color=color.white, bgcolor=(aligned and inSession) ? color.green : color.gray, text_size=size.small)
+    table.cell(info, 0, 3, "SnR/Pool", text_color=color.white, bgcolor=color.new(color.black, 20), text_size=size.small)
+    table.cell(info, 1, 3, str.tostring(array.size(snrLvl)) + " / " + (eqlSweptRecent ? "B" : "-") + (eqhSweptRecent ? "S" : "-"), text_color=color.white, bgcolor=color.new(color.black, 40), text_size=size.small)
     int   total = wins + losses
     float wRate = total > 0 ? 100.0 * wins / total : 0.0
     color wCol  = total == 0 ? color.gray : wRate >= 50 ? color.green : color.red
-    table.cell(info, 0, 3, "Trade", text_color=color.white, bgcolor=color.new(color.black, 20), text_size=size.small)
-    table.cell(info, 1, 3, str.tostring(total) + " (" + str.tostring(wins) + "W/" + str.tostring(losses) + "L)", text_color=color.white, bgcolor=color.new(color.black, 20), text_size=size.small)
-    table.cell(info, 0, 4, "Win%",  text_color=color.white, bgcolor=color.new(color.black, 20), text_size=size.small)
-    table.cell(info, 1, 4, str.tostring(wRate, "#.#") + "%", text_color=color.white, bgcolor=wCol, text_size=size.small)
+    table.cell(info, 0, 4, "Trade", text_color=color.white, bgcolor=color.new(color.black, 20), text_size=size.small)
+    table.cell(info, 1, 4, str.tostring(total) + " (" + str.tostring(wins) + "W/" + str.tostring(losses) + "L)", text_color=color.white, bgcolor=color.new(color.black, 20), text_size=size.small)
+    table.cell(info, 0, 5, "Win%",  text_color=color.white, bgcolor=color.new(color.black, 20), text_size=size.small)
+    table.cell(info, 1, 5, str.tostring(wRate, "#.#") + "%", text_color=color.white, bgcolor=wCol, text_size=size.small)
     string startTxt = na(firstSigTime) ? "-" : str.format_time(firstSigTime, "yyyy-MM-dd HH:mm", sessTz)
     string endTxt   = str.format_time(time, "yyyy-MM-dd HH:mm", sessTz)
-    table.cell(info, 0, 5, "Mulai", text_color=color.white, bgcolor=color.new(color.black, 20), text_size=size.small)
-    table.cell(info, 1, 5, startTxt, text_color=color.white, bgcolor=color.new(color.black, 40), text_size=size.small)
-    table.cell(info, 0, 6, "Akhir", text_color=color.white, bgcolor=color.new(color.black, 20), text_size=size.small)
-    table.cell(info, 1, 6, endTxt, text_color=color.white, bgcolor=color.new(color.black, 40), text_size=size.small)
+    table.cell(info, 0, 6, "Mulai", text_color=color.white, bgcolor=color.new(color.black, 20), text_size=size.small)
+    table.cell(info, 1, 6, startTxt, text_color=color.white, bgcolor=color.new(color.black, 40), text_size=size.small)
+    table.cell(info, 0, 7, "Akhir", text_color=color.white, bgcolor=color.new(color.black, 20), text_size=size.small)
+    table.cell(info, 1, 7, endTxt, text_color=color.white, bgcolor=color.new(color.black, 40), text_size=size.small)
 
 // =================== ALERTS (Webhook Telegram) ============================
-alertcondition(buySignal,  title="XAUUSD SMC - BUY",  message="[⚠️ XAUUSD SMC SIGNAL]\nType: BUY\nPrice: {{close}}\nTimeframe: {{interval}}\nNote: Strict align + sweep + sesi WIB lolos. Mitigasi OB/FVG. Konfirmasi manual.")
-alertcondition(sellSignal, title="XAUUSD SMC - SELL", message="[⚠️ XAUUSD SMC SIGNAL]\nType: SELL\nPrice: {{close}}\nTimeframe: {{interval}}\nNote: Strict align + sweep + sesi WIB lolos. Mitigasi OB/FVG. Konfirmasi manual.")
+alertcondition(buySignal,  title="XAUUSD SMC - BUY",  message="[⚠️ XAUUSD SMC SIGNAL]\nType: BUY\nPrice: {{close}}\nTimeframe: {{interval}}\nNote: Confluence OB+SnR (RBS) + sweep pool + align + sesi WIB lolos. Konfirmasi manual.")
+alertcondition(sellSignal, title="XAUUSD SMC - SELL", message="[⚠️ XAUUSD SMC SIGNAL]\nType: SELL\nPrice: {{close}}\nTimeframe: {{interval}}\nNote: Confluence OB+SnR (SBR) + sweep pool + align + sesi WIB lolos. Konfirmasi manual.")
+alertcondition(bepBuy,  title="XAUUSD SMC - BEP (BUY)",  message="[🟦 XAUUSD SMC] MOVE SL TO BEP\nType: BUY\nPrice: {{close}}\nNote: Profit +1R / sentuh SnR. Geser SL ke harga entry (breakeven).")
+alertcondition(bepSell, title="XAUUSD SMC - BEP (SELL)", message="[🟦 XAUUSD SMC] MOVE SL TO BEP\nType: SELL\nPrice: {{close}}\nNote: Profit +1R / sentuh SnR. Geser SL ke harga entry (breakeven).")
 
 alertFreq = oncePerBarClose ? alert.freq_once_per_bar_close : alert.freq_once_per_bar
 
 if buySignal
-    alert("[⚠️ XAUUSD SMC SIGNAL]\nType: BUY\nPrice: " + str.tostring(close, fmt) + "\nTimeframe: " + timeframe.period + "\nEntry: " + str.tostring(entry, fmt) + "\nSL: " + str.tostring(sl, fmt) + " (" + str.tostring(slPips, "#.#") + " pips)\nTP: " + str.tostring(tp, fmt) + "  (RR 1:" + str.tostring(rr) + ")\nNote: HTF+LTF bullish, sweep ok, sesi WIB aktif. Konfirmasi manual sebelum entry.", alertFreq)
+    alert("[⚠️ XAUUSD SMC SIGNAL]\nType: BUY\nPrice: " + str.tostring(close, fmt) + "\nTimeframe: " + timeframe.period + "\nEntry: " + str.tostring(entry, fmt) + "\nSL: " + str.tostring(sl, fmt) + " (" + str.tostring(slPips, "#.#") + " pips)\nTP: " + str.tostring(tp, fmt) + "  (RR 1:" + str.tostring(rr) + ")\nNote: OB+SnR (RBS), sweep pool, HTF+LTF bullish, sesi WIB. Konfirmasi manual.", alertFreq)
 
 if sellSignal
-    alert("[⚠️ XAUUSD SMC SIGNAL]\nType: SELL\nPrice: " + str.tostring(close, fmt) + "\nTimeframe: " + timeframe.period + "\nEntry: " + str.tostring(entry, fmt) + "\nSL: " + str.tostring(sl, fmt) + " (" + str.tostring(slPips, "#.#") + " pips)\nTP: " + str.tostring(tp, fmt) + "  (RR 1:" + str.tostring(rr) + ")\nNote: HTF+LTF bearish, sweep ok, sesi WIB aktif. Konfirmasi manual sebelum entry.", alertFreq)
+    alert("[⚠️ XAUUSD SMC SIGNAL]\nType: SELL\nPrice: " + str.tostring(close, fmt) + "\nTimeframe: " + timeframe.period + "\nEntry: " + str.tostring(entry, fmt) + "\nSL: " + str.tostring(sl, fmt) + " (" + str.tostring(slPips, "#.#") + " pips)\nTP: " + str.tostring(tp, fmt) + "  (RR 1:" + str.tostring(rr) + ")\nNote: OB+SnR (SBR), sweep pool, HTF+LTF bearish, sesi WIB. Konfirmasi manual.", alertFreq)
+
+if bepEvent
+    alert("[🟦 XAUUSD SMC] MOVE SL TO BEP (Breakeven)\nType: " + (bepIsBuy ? "BUY" : "SELL") + "\nPrice: " + str.tostring(close, fmt) + "\nEntry: " + str.tostring(bepEntry, fmt) + "\nNote: Harga sudah +1R atau menyentuh SnR LTF. Amankan posisi: geser SL ke entry.", alert.freq_once_per_bar)

@@ -22,8 +22,11 @@ Indikator **TradingView (Pine Script v6)** berbasis **Smart Money Concepts (SMC)
 | 10 | **Risk 30–60 Pips** | SL otomatis dalam pips: minimal 30 (anti-noise), maksimal 60. Jika OB terlalu lebar, **entry digeser ke 50% OB (equilibrium)**; jika masih >60 pips sinyal dicoret. |
 | 11 | **Signal Quality (Anti Over-Trading)** | Cooldown antar sinyal, satu posisi aktif, syarat zona *fresh* (umur maksimal). |
 | 12 | **Win-rate Counter (Intrabar)** | Mini-backtest dengan resolusi akurat via data timeframe lebih kecil + tampilan periode (Mulai/Akhir). |
-| 13 | **Session Filter (WIB)** | Sinyal hanya 13:00–22:00 WIB (London/New York) untuk menghindari jam sepi/whipsaw. |
-| 14 | **Alert Telegram** | `alertcondition` + fungsi `alert()` dinamis dengan format pesan rapi (termasuk jarak SL dalam pips). |
+| 13 | **OB + SnR Confluence (RBS/SBR)** | Sinyal hanya jika OB berimpit level SnR horizontal: **RBS** (Resistance-jadi-Support) untuk BUY, **SBR** (Support-jadi-Resistance) untuk SELL. |
+| 14 | **Liquidity Pool (Equal H/L Sweep)** | Wajib ada sweep pool retail (Equal Lows/double bottom untuk BUY, Equal Highs/double top untuk SELL) sebelum konfirmasi entry. |
+| 15 | **Breakeven (BEP) Notification** | Alert "Move SL to BEP" saat profit mencapai **+1R** atau harga menyentuh **SnR LTF terdekat**. |
+| 16 | **Session Filter (WIB)** | Sinyal hanya 13:00–22:00 WIB (London/New York) untuk menghindari jam sepi/whipsaw. |
+| 17 | **Alert Telegram** | `alertcondition` + fungsi `alert()` dinamis dengan format pesan rapi (termasuk jarak SL dalam pips & alert BEP). |
 
 ---
 
@@ -50,7 +53,7 @@ xauusd-entry-plan/
 ## 🔔 Cara Aktifkan Alert (Webhook Telegram)
 
 1. Klik ikon **Alerts → Create Alert**.
-2. **Condition**: pilih `XAU SMC v2.3` → **"Any alert() function call"**.
+2. **Condition**: pilih `XAU SMC v2.4` → **"Any alert() function call"**.
 3. **Trigger**: **Once Per Bar Close** (anti-repaint).
 4. Tab **Notifications** → centang **Webhook URL** → isi URL relay/bot Telegram Anda.
 5. Klik **Create**. Pesan terisi otomatis (BUY/SELL + harga + Entry/SL/TP).
@@ -100,6 +103,20 @@ Tiga penyaring ketat untuk menaikkan winrate dan menekan false breakout:
 
 #### Cara membaca naik-turunnya jumlah sinyal
 Setelah v2.3, **jumlah trade akan turun drastis** (itu tujuannya). Yang dikejar adalah **kualitas**, bukan kuantitas. Target realistis winrate naik dari ~28% menuju 45%+ dengan RR 1:2.
+
+### 🧩 OB + SnR Confluence, Liquidity Pool & BEP (v2.4)
+
+Tiga tambahan untuk mendongkrak winrate lebih tinggi lagi dan mengamankan profit:
+
+| Filter | Grup input | Fungsi |
+|--------|-----------|--------|
+| **OB + SnR Confluence** | 10 | `useSnR`: sinyal hanya valid jika OB berimpit level SnR horizontal. **BUY** butuh **RBS** (resistance lama jadi support), **SELL** butuh **SBR** (support lama jadi resistance). Toleransi diatur `snrTolPips`. |
+| **Liquidity Pool Sweep** | 11 | `useLiqPool`: sebelum entry, harga wajib menyapu pool retail — **Equal Lows** (double bottom) untuk BUY, **Equal Highs** (double top) untuk SELL — dalam `liqPoolLookback` bar. |
+| **BEP Notification** | 12 | `useBEP`: kirim alert **"Move SL to BEP"** saat profit mencapai **+1R** (RR 1:1) atau harga menyentuh **SnR LTF terdekat**. Bantu amankan posisi agar profit tak berbalik jadi loss. |
+
+> **Panel baru:** baris **"SnR/Pool"** menampilkan jumlah level SnR aktif dan status sweep pool (`B` = Equal Lows tersapu untuk BUY, `S` = Equal Highs tersapu untuk SELL). Marker biru **"BEP"** muncul di chart saat trigger breakeven.
+
+> **Catatan SnR:** garis **oranye** = level dari pivot High (potensi resistance/RBS), garis **biru** = dari pivot Low (potensi support/SBR). Bot otomatis mendeteksi confluence; Anda tinggal cek visual.
 
 ---
 
