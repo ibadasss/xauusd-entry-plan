@@ -17,8 +17,10 @@ Indikator **TradingView (Pine Script v6)** berbasis **Smart Money Concepts (SMC)
 | 5 | **HTF Bias Filter** | Saring sinyal agar searah tren timeframe besar (multi-timeframe via `request.security`). |
 | 6 | **Liquidity EQH/EQL** | Deteksi Equal Highs / Equal Lows (kolam likuiditas) dengan toleransi berbasis ATR. |
 | 7 | **Auto SL / TP** | Hitung otomatis Entry, Stop Loss, Take Profit (berbasis zona + Risk:Reward). |
-| 8 | **Win-rate Counter** | Mini-backtest: lacak tiap sinyal kena TP (Win) atau SL (Loss), tampil di panel. |
-| 9 | **Alert Telegram** | `alertcondition` + fungsi `alert()` dinamis dengan format pesan rapi. |
+| 8 | **Signal Quality (Anti Over-Trading)** | Cooldown antar sinyal, satu posisi aktif dalam satu waktu, dan syarat zona masih *fresh* (umur maksimal). |
+| 9 | **Win-rate Counter (Intrabar)** | Mini-backtest dengan resolusi akurat via data timeframe lebih kecil untuk menentukan SL/TP yang kena lebih dulu. |
+| 10 | **Session Filter** | Sinyal hanya muncul saat sesi aktif (London/New York) untuk menghindari jam sepi/whipsaw. |
+| 11 | **Alert Telegram** | `alertcondition` + fungsi `alert()` dinamis dengan format pesan rapi. |
 
 ---
 
@@ -28,7 +30,7 @@ Indikator **TradingView (Pine Script v6)** berbasis **Smart Money Concepts (SMC)
 xauusd-entry-plan/
 ├── README.md
 ├── indicators/
-│   └── XAUUSD_SMC_Signal.pine    # Script indikator SMC (Pine v5)
+│   └── XAUUSD_SMC_Signal.pine    # Script indikator SMC (Pine v6)
 └── docs/
     └── entry-plan.md             # Checklist & rencana entry SMC
 ```
@@ -45,7 +47,7 @@ xauusd-entry-plan/
 ## 🔔 Cara Aktifkan Alert (Webhook Telegram)
 
 1. Klik ikon **Alerts → Create Alert**.
-2. **Condition**: pilih `XAU SMC v2.1` → **"Any alert() function call"**.
+2. **Condition**: pilih `XAU SMC v2.2` → **"Any alert() function call"**.
 3. **Trigger**: **Once Per Bar Close** (anti-repaint).
 4. Tab **Notifications** → centang **Webhook URL** → isi URL relay/bot Telegram Anda.
 5. Klik **Create**. Pesan terisi otomatis (BUY/SELL + harga + Entry/SL/TP).
@@ -64,6 +66,22 @@ xauusd-entry-plan/
 
 - **Buffer SL**: Gold volatil — coba `1.0`–`3.0` ($) tergantung TF.
 - **Risk:Reward**: default `2.0`. Untuk scalping M3/M5 bisa turunkan ke `1.5`.
+
+### 🎯 Tuning Kualitas Sinyal (Anti Over-Trading)
+
+Jika sinyal terlalu sering muncul (over-trading), sesuaikan grup **"8. Signal Quality"**:
+
+| Parameter | Fungsi | Saran |
+|-----------|--------|-------|
+| **Max umur zona (bar)** | Zona OB/FVG hanya valid jika dimitigasi dalam N bar setelah dibuat | Kecilkan (mis. `20-30`) agar hanya zona segar yang dipakai |
+| **Cooldown antar sinyal (bar)** | Jarak minimal antar sinyal | Naikkan (mis. `15-20`) untuk mengurangi frekuensi |
+| **Satu posisi aktif** | Tidak ada sinyal baru selama trade lama belum kena SL/TP | Biarkan `ON` |
+
+> **Win% lebih rendah dari ekspektasi?** Aktifkan **"Resolusi akurat via data intrabar"** (grup 9). Tanpa ini, jika SL & TP tersentuh di bar yang sama, hasilnya hanya estimasi. RR 1:2 butuh win rate **>33%** untuk break-even.
+
+### 🕒 Session Filter
+
+Grup **"10. Session Filter"** membatasi sinyal ke jam aktif. Default `0700-2100` (London + NY, timezone `Europe/London`). Sesuaikan dengan zona waktu & sesi favorit Anda.
 
 ---
 
