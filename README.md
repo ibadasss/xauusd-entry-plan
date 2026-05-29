@@ -1,6 +1,6 @@
 # XAUUSD Entry Plan — SMC Signal Bot
 
-Indikator **TradingView (Pine Script v5)** berbasis **Smart Money Concepts (SMC)** khusus untuk market **XAU/USD (Emas)**. Bersifat *signal-only* (pemberi sinyal, **bukan** auto-entry) dan dirancang untuk dihubungkan ke **Webhook Telegram** lewat TradingView Alert.
+Indikator **TradingView (Pine Script v6)** berbasis **Smart Money Concepts (SMC)** khusus untuk market **XAU/USD (Emas)**. Bersifat *signal-only* (pemberi sinyal, **bukan** auto-entry) dan dirancang untuk dihubungkan ke **Webhook Telegram** lewat TradingView Alert.
 
 > ⚠️ **Disclaimer:** Repo ini adalah alat bantu teknikal & edukasi, **bukan saran finansial**. Sinyal SMC bersifat probabilistik. Selalu lakukan konfirmasi manual dan manajemen risiko Anda sendiri. **Backtest di akun demo** sebelum dipakai live.
 
@@ -45,7 +45,7 @@ xauusd-entry-plan/
 ## 🔔 Cara Aktifkan Alert (Webhook Telegram)
 
 1. Klik ikon **Alerts → Create Alert**.
-2. **Condition**: pilih `XAU SMC v2` → **"Any alert() function call"**.
+2. **Condition**: pilih `XAU SMC v2.1` → **"Any alert() function call"**.
 3. **Trigger**: **Once Per Bar Close** (anti-repaint).
 4. Tab **Notifications** → centang **Webhook URL** → isi URL relay/bot Telegram Anda.
 5. Klik **Create**. Pesan terisi otomatis (BUY/SELL + harga + Entry/SL/TP).
