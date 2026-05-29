@@ -17,10 +17,13 @@ Indikator **TradingView (Pine Script v6)** berbasis **Smart Money Concepts (SMC)
 | 5 | **HTF Bias Filter** | Saring sinyal agar searah tren timeframe besar (multi-timeframe via `request.security`). |
 | 6 | **Liquidity EQH/EQL** | Deteksi Equal Highs / Equal Lows (kolam likuiditas) dengan toleransi berbasis ATR. |
 | 7 | **Auto SL / TP** | Hitung otomatis Entry, Stop Loss, Take Profit (berbasis zona + Risk:Reward). |
-| 8 | **Signal Quality (Anti Over-Trading)** | Cooldown antar sinyal, satu posisi aktif dalam satu waktu, dan syarat zona masih *fresh* (umur maksimal). |
-| 9 | **Win-rate Counter (Intrabar)** | Mini-backtest dengan resolusi akurat via data timeframe lebih kecil untuk menentukan SL/TP yang kena lebih dulu. |
-| 10 | **Session Filter** | Sinyal hanya muncul saat sesi aktif (London/New York) untuk menghindari jam sepi/whipsaw. |
-| 11 | **Alert Telegram** | `alertcondition` + fungsi `alert()` dinamis dengan format pesan rapi. |
+| 8 | **Strict TF Alignment** | BUY hanya jika **HTF & LTF sama-sama bullish**; SELL hanya jika keduanya bearish. Sinyal counter-trend dicoret total. |
+| 9 | **Liquidity Sweep (Anti-Inducement)** | CHoCH baru dianggap valid jika **didahului liquidity sweep** (ekor menembus swing lalu close balik ke dalam range). |
+| 10 | **Risk 30–60 Pips** | SL otomatis dalam pips: minimal 30 (anti-noise), maksimal 60. Jika OB terlalu lebar, **entry digeser ke 50% OB (equilibrium)**; jika masih >60 pips sinyal dicoret. |
+| 11 | **Signal Quality (Anti Over-Trading)** | Cooldown antar sinyal, satu posisi aktif, syarat zona *fresh* (umur maksimal). |
+| 12 | **Win-rate Counter (Intrabar)** | Mini-backtest dengan resolusi akurat via data timeframe lebih kecil + tampilan periode (Mulai/Akhir). |
+| 13 | **Session Filter (WIB)** | Sinyal hanya 13:00–22:00 WIB (London/New York) untuk menghindari jam sepi/whipsaw. |
+| 14 | **Alert Telegram** | `alertcondition` + fungsi `alert()` dinamis dengan format pesan rapi (termasuk jarak SL dalam pips). |
 
 ---
 
@@ -47,7 +50,7 @@ xauusd-entry-plan/
 ## 🔔 Cara Aktifkan Alert (Webhook Telegram)
 
 1. Klik ikon **Alerts → Create Alert**.
-2. **Condition**: pilih `XAU SMC v2.2` → **"Any alert() function call"**.
+2. **Condition**: pilih `XAU SMC v2.3` → **"Any alert() function call"**.
 3. **Trigger**: **Once Per Bar Close** (anti-repaint).
 4. Tab **Notifications** → centang **Webhook URL** → isi URL relay/bot Telegram Anda.
 5. Klik **Create**. Pesan terisi otomatis (BUY/SELL + harga + Entry/SL/TP).
@@ -81,7 +84,22 @@ Jika sinyal terlalu sering muncul (over-trading), sesuaikan grup **"8. Signal Qu
 
 ### 🕒 Session Filter
 
-Grup **"10. Session Filter"** membatasi sinyal ke jam aktif. Default `0700-2100` (London + NY, timezone `Europe/London`). Sesuaikan dengan zona waktu & sesi favorit Anda.
+Grup **"12. Session Filter (WIB)"** membatasi sinyal ke jam aktif. Default `1300-2200` (13:00–22:00 WIB = sesi London + New York), timezone `Asia/Jakarta`. Di luar jam ini bot tidak mengirim alert meski kondisi teknikal terpenuhi.
+
+### 🎯 Strict TF Alignment, Liquidity Sweep & Risk 30–60 Pips (v2.3)
+
+Tiga penyaring ketat untuk menaikkan winrate dan menekan false breakout:
+
+| Filter | Grup input | Fungsi |
+|--------|-----------|--------|
+| **Strict TF Alignment** | 5 | `useStrictAlign`: BUY hanya jika HTF EMA bias **dan** struktur LTF sama-sama bullish (SELL kebalikannya). Mencoret semua sinyal counter-trend. |
+| **Liquidity Sweep** | 6 | `useSweep`: CHoCH valid hanya jika dalam `sweepLookback` bar sebelumnya terjadi sweep (ekor menembus swing lalu close balik ke dalam range). Menghindari jebakan inducement. |
+| **Risk 30–60 Pips** | 9 | `minPips`=30, `maxPips`=60, `pipValue`=0.10. SL dipaksa minimal 30 pips (anti-noise). Jika >60 pips → **Opsi B**: entry digeser ke 50% OB (equilibrium); jika masih >60 → sinyal dicoret. |
+
+> **Catatan pip XAU/USD:** default `pipValue = 0.10` artinya 10 pips = $1.00 pergerakan harga. Jadi 30 pips = $3.00, 60 pips = $6.00. Sesuaikan dengan konvensi broker Anda jika berbeda.
+
+#### Cara membaca naik-turunnya jumlah sinyal
+Setelah v2.3, **jumlah trade akan turun drastis** (itu tujuannya). Yang dikejar adalah **kualitas**, bukan kuantitas. Target realistis winrate naik dari ~28% menuju 45%+ dengan RR 1:2.
 
 ---
 
