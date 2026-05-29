@@ -11,6 +11,7 @@
 //|   - 24 jam nonstop (TANPA session filter).                       |
 //|   - TP DINAMIS ke key-level berikutnya; RR dihitung otomatis.    |
 //|   - SL konsisten 30-60 pips (geser entry bila terlalu lebar).    |
+//|   - Deduplikasi: anti kirim sinyal sama berulang di zona sama.   |
 //|   - Notifikasi Telegram via WebRequest.                          |
 //+------------------------------------------------------------------+
 #property copyright "XAUUSD Entry Plan"
@@ -49,6 +50,11 @@ input int    InpKeyLevelScan   = 200;             // Bar di-scan utk cari key-le
 input group "=== Anti Over-Trading ==="
 input int    InpCooldownBars   = 5;               // Cooldown antar sinyal (bar)
 
+input group "=== Deduplikasi Sinyal ==="
+input bool   InpUseDedup       = true;            // Anti kirim sinyal sama di zona yang sama
+input double InpDedupPips       = 25.0;           // Jarak min antar sinyal sejenis (pips)
+input int    InpDedupExpiryBars = 300;            // Umur memori dedup (bar); 0 = selamanya
+
 input group "=== Telegram ==="
 input bool   InpUseTelegram    = true;            // Kirim ke Telegram
 input string InpBotToken       = "";              // Token bot (dari @BotFather)
@@ -81,6 +87,12 @@ int      g_lastBarCount = 0;
 double   g_snr[];                 // harga level
 int      g_snrTouch[];            // jumlah sentuhan
 bool     g_snrIsRes[];            // true=resistance, false=support
+
+// Memori deduplikasi sinyal (sidik jari sinyal yang sudah dikirim)
+string   g_dedupStrat[];          // "SMC" / "SnR"
+int      g_dedupDir[];            // DIR_BUY / DIR_SELL
+double   g_dedupRef[];            // harga referensi zona (sumbu zona/level)
+int      g_dedupBar[];            // Bars() saat sinyal dikirim (utk expiry)
 
 //==================================================================
 //  UTIL
@@ -378,6 +390,57 @@ double ComputeRR(int dir, double entry, double sl, double tp)
 }
 
 //==================================================================
+//  DEDUPLIKASI SINYAL (anti kirim sinyal sama di zona yang sama)
+//==================================================================
+//--- buang entri memori yang sudah kedaluwarsa (berbasis umur bar)
+void PurgeDedup()
+{
+   if(InpDedupExpiryBars<=0) return;          // 0 = simpan selamanya
+   int barsNow = Bars(_Symbol,_Period);
+   int i=0;
+   while(i<ArraySize(g_dedupRef))
+   {
+      if(barsNow - g_dedupBar[i] > InpDedupExpiryBars)
+      {
+         int last = ArraySize(g_dedupRef)-1;
+         g_dedupStrat[i]=g_dedupStrat[last];
+         g_dedupDir[i]  =g_dedupDir[last];
+         g_dedupRef[i]  =g_dedupRef[last];
+         g_dedupBar[i]  =g_dedupBar[last];
+         ArrayResize(g_dedupStrat,last); ArrayResize(g_dedupDir,last);
+         ArrayResize(g_dedupRef,last);   ArrayResize(g_dedupBar,last);
+      }
+      else i++;
+   }
+}
+
+//--- true bila sinyal sejenis (strategi+arah) sudah pernah dikirim
+//    di sekitar harga referensi yang sama (dalam toleransi pips).
+bool IsDuplicate(const string strat, int dir, double refPrice)
+{
+   if(!InpUseDedup) return false;
+   double tol = PipsToPrice(InpDedupPips);
+   for(int i=0;i<ArraySize(g_dedupRef);i++)
+   {
+      if(g_dedupDir[i]==dir && g_dedupStrat[i]==strat &&
+         MathAbs(g_dedupRef[i]-refPrice)<=tol)
+         return true;
+   }
+   return false;
+}
+
+//--- catat sinyal ke memori dedup
+void RememberSignal(const string strat, int dir, double refPrice)
+{
+   if(!InpUseDedup) return;
+   int n=ArraySize(g_dedupRef);
+   ArrayResize(g_dedupStrat,n+1); ArrayResize(g_dedupDir,n+1);
+   ArrayResize(g_dedupRef,n+1);   ArrayResize(g_dedupBar,n+1);
+   g_dedupStrat[n]=strat; g_dedupDir[n]=dir; g_dedupRef[n]=refPrice;
+   g_dedupBar[n]=Bars(_Symbol,_Period);
+}
+
+//==================================================================
 //  EVALUASI SINYAL PER JALUR (dipanggil sekali tiap bar baru)
 //==================================================================
 void EvaluateSMC()
@@ -398,9 +461,11 @@ void EvaluateSMC()
          {
             double tp = NextKeyLevelSMC(DIR_BUY, e);
             double rr = (tp>0) ? ComputeRR(DIR_BUY, e, s, tp) : 0.0;
-            if(tp>0 && rr>=InpMinRR)
+            double ref = (g_obBullTop + g_obBullBot)/2.0;
+            if(tp>0 && rr>=InpMinRR && !IsDuplicate("SMC", DIR_BUY, ref))
             {
                NotifySignal("SMC", DIR_BUY, e, s, tp, sp, rr);
+               RememberSignal("SMC", DIR_BUY, ref);
                g_obBullActive=false;       // konsumsi zona setelah sinyal
                g_lastSMCTime=TimeAt(1);
             }
@@ -421,9 +486,11 @@ void EvaluateSMC()
          {
             double tp = NextKeyLevelSMC(DIR_SELL, e);
             double rr = (tp>0) ? ComputeRR(DIR_SELL, e, s, tp) : 0.0;
-            if(tp>0 && rr>=InpMinRR)
+            double ref = (g_obBearTop + g_obBearBot)/2.0;
+            if(tp>0 && rr>=InpMinRR && !IsDuplicate("SMC", DIR_SELL, ref))
             {
                NotifySignal("SMC", DIR_SELL, e, s, tp, sp, rr);
+               RememberSignal("SMC", DIR_SELL, ref);
                g_obBearActive=false;
                g_lastSMCTime=TimeAt(1);
             }
@@ -459,9 +526,10 @@ void EvaluateSnR()
             {
                double tp = NextKeyLevelSnR(DIR_BUY, e);
                double rr = (tp>0) ? ComputeRR(DIR_BUY, e, s, tp) : 0.0;
-               if(tp>0 && rr>=InpMinRR)
+               if(tp>0 && rr>=InpMinRR && !IsDuplicate("SnR", DIR_BUY, lvl))
                {
                   NotifySignal("SnR", DIR_BUY, e, s, tp, sp, rr);
+                  RememberSignal("SnR", DIR_BUY, lvl);
                   g_lastSnRTime=TimeAt(1);
                }
             }
@@ -484,9 +552,10 @@ void EvaluateSnR()
             {
                double tp = NextKeyLevelSnR(DIR_SELL, e);
                double rr = (tp>0) ? ComputeRR(DIR_SELL, e, s, tp) : 0.0;
-               if(tp>0 && rr>=InpMinRR)
+               if(tp>0 && rr>=InpMinRR && !IsDuplicate("SnR", DIR_SELL, lvl))
                {
                   NotifySignal("SnR", DIR_SELL, e, s, tp, sp, rr);
+                  RememberSignal("SnR", DIR_SELL, lvl);
                   g_lastSnRTime=TimeAt(1);
                }
             }
@@ -501,6 +570,7 @@ void EvaluateSnR()
 int OnInit()
 {
    ArrayResize(g_snr,0); ArrayResize(g_snrTouch,0); ArrayResize(g_snrIsRes,0);
+   ArrayResize(g_dedupStrat,0); ArrayResize(g_dedupDir,0); ArrayResize(g_dedupRef,0); ArrayResize(g_dedupBar,0);
    g_lastBarCount = Bars(_Symbol,_Period);
    PrintFormat("XAUUSD SMC+SnR Signal EA v3.0 aktif | SMC=%s SnR=%s | TF=%s",
                (InpEnableSMC?"ON":"OFF"), (InpEnableSnR?"ON":"OFF"), EnumToString(_Period));
@@ -528,6 +598,9 @@ void OnTick()
 
    // 2) deteksi break & bentuk OB (SMC)
    DetectStructureAndOB();
+
+   // 2b) bersihkan memori dedup yang kedaluwarsa
+   PurgeDedup();
 
    // 3) cooldown sederhana per-jalur (dalam satuan bar)
    datetime barTime = TimeAt(1);

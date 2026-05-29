@@ -154,7 +154,7 @@ File: [`expert/XAUUSD_SMC_SnR_Signal.mq5`](expert/XAUUSD_SMC_SnR_Signal.mq5) —
 | **TP Dinamis** | TP otomatis ke **key-level berikutnya**: SMC → swing high/low terdekat searah; SnR → garis SnR berikutnya. **RR dihitung otomatis** (mis. SL 40 pips, jarak TP 80 pips → ditulis `1:2`). |
 | **SL 30–60 pips** | <30 pips → digenapkan 30. >60 pips → entry digeser (SMC: 50% OB; SnR: lebih dekat ke sumbu level). Jika tetap >60 → **sinyal dibatalkan**. |
 | **Anti-repaint** | Evaluasi hanya pada **bar tertutup** (shift=1) dan diproses sekali per bar baru. |
-
+| **Deduplikasi sinyal** | Anti kirim sinyal **sama berulang di zona yang sama**: tiap sinyal disidik-jari (strategi + arah + harga referensi zona/level) dan disimpan dalam memori berbatas umur (`InpDedupExpiryBars`). Sinyal sejenis dalam toleransi `InpDedupPips` di-skip. |
 ### ⚙️ Cara Pasang di MetaTrader 5
 
 1. Buka **MetaEditor** (F4 di MT5) → **File → Open Data Folder** → masuk `MQL5/Experts/`.
@@ -184,6 +184,9 @@ File: [`expert/XAUUSD_SMC_SnR_Signal.mq5`](expert/XAUUSD_SMC_SnR_Signal.mq5) —
 | `InpPipSize` | `0.10` untuk XAUUSD (10 pips = $1.00) — sesuaikan dgn broker |
 | `InpMinSLPips` / `InpMaxSLPips` | `30` / `60` (default) |
 | `InpMinRR` | RR minimal agar sinyal dikirim (default `1.0`) |
+| `InpUseDedup` | Aktifkan deduplikasi sinyal (default `true`) |
+| `InpDedupPips` | Jarak min antar sinyal sejenis agar tak dianggap duplikat (default `25` pips) |
+| `InpDedupExpiryBars` | Umur memori dedup dalam bar; `0` = ingat selamanya (default `300`) |
 
 ### 📨 Contoh Pesan Telegram (EA)
 
