@@ -1,24 +1,17 @@
-//@version=5
+//@version=6
 // ============================================================================
-//  XAUUSD SMC SIGNAL BOT  v2.0  (Smart Money Concepts)  -  Pine Script v5
+//  XAUUSD SMC SIGNAL BOT  v2.1  (Smart Money Concepts)  -  Pine Script v6
 //  Tipe : INDICATOR (Signal only / NO auto-entry)
 //
-//  Fitur v2.0:
-//   1. Market Structure : Swing High/Low + label BOS & CHoCH (Bull/Bear)
-//   2. Order Block (OB)  : Demand/Supply + filter Imbalance valid
-//   3. Fair Value Gap    : Deteksi FVG/Imbalance + mitigasi
-//   4. Signal Engine     : CHoCH/BOS -> retrace -> mitigasi OB / isi FVG
-//   5. HTF Bias Filter   : Saring sinyal sesuai tren timeframe besar (NEW)
-//   6. Liquidity EQH/EQL : Deteksi Equal Highs / Equal Lows (NEW)
-//   7. Auto SL / TP      : Entry, Stop Loss, Take Profit otomatis (NEW)
-//   8. Alert             : alertcondition + alert() untuk Webhook Telegram
+//  Catatan v6:
+//   - Semua pesan multi-baris memakai escape "\n" dalam SATU baris fisik
+//     supaya tidak rusak (mismatched '\n') saat di-paste ke Pine Editor.
+//   - Penambahan guard na (bool v6 bisa bernilai na).
 // ============================================================================
-indicator("XAUUSD SMC Signal Bot [v2]", shorttitle="XAU SMC v2", overlay=true,
+indicator("XAUUSD SMC Signal Bot [v2.1]", shorttitle="XAU SMC v2.1", overlay=true,
      max_boxes_count=500, max_lines_count=500, max_labels_count=500)
 
-// ============================================================================
-//  INPUTS
-// ============================================================================
+// =============================== INPUTS ====================================
 grpMS   = "1. Market Structure"
 swingLen = input.int(10, "Swing Length (Pivot L/R)", minval=2, maxval=50, group=grpMS,
      tooltip="Bar kiri & kanan untuk validasi Swing High/Low. M3/M5: 5-8, M15/H1: 10-15.")
@@ -63,9 +56,7 @@ grpStat = "8. Win-rate Counter"
 showStats = input.bool(true, "Tampilkan statistik Win/Loss", group=grpStat,
      tooltip="Mini-backtest: lacak tiap sinyal apakah kena TP (Win) atau SL (Loss) lebih dulu.")
 
-// ============================================================================
-//  USER-DEFINED TYPES
-// ============================================================================
+// ========================= USER-DEFINED TYPES ==============================
 type Zone
     box   bx
     float top
@@ -84,15 +75,13 @@ var array<Trade> trades  = array.new<Trade>()
 var int wins   = 0
 var int losses = 0
 
-// ============================================================================
-//  1. MARKET STRUCTURE  (Swing High / Low -> BOS & CHoCH)
-// ============================================================================
+// =================== 1. MARKET STRUCTURE (BOS & CHoCH) =====================
 ph = ta.pivothigh(high, swingLen, swingLen)
 pl = ta.pivotlow(low,  swingLen, swingLen)
 
 var float swingHigh = na
 var float swingLow  = na
-var int   trend     = 0        // 1 = Bullish, -1 = Bearish
+var int   trend     = 0
 var bool  brokeHigh = false
 var bool  brokeLow  = false
 
@@ -134,9 +123,7 @@ if showMS
     if chochBear
         label.new(bar_index, high, "CHoCH ▼", style=label.style_label_down, color=color.new(color.orange, 0), textcolor=color.black, size=size.small)
 
-// ============================================================================
-//  6. LIQUIDITY : EQUAL HIGHS / EQUAL LOWS
-// ============================================================================
+// =================== 6. LIQUIDITY : EQUAL HIGHS / LOWS =====================
 atr = ta.atr(14)
 eqThresh = atr * eqAtrFac
 
@@ -147,7 +134,7 @@ var int   lastPLbar = na
 
 if not na(ph)
     int curBar = bar_index - swingLen
-    if showLiq and not na(lastPH) and math.abs(ph - lastPH) <= eqThresh
+    if showLiq and not na(lastPH) and math.abs(ph - lastPH) <= nz(eqThresh)
         line.new(lastPHbar, lastPH, curBar, ph, color=color.new(color.yellow, 0), style=line.style_dotted, width=1)
         label.new(curBar, ph, "EQH 💧", style=label.style_label_down, color=color.new(color.yellow, 70), textcolor=color.yellow, size=size.tiny)
     lastPH    := ph
@@ -155,23 +142,19 @@ if not na(ph)
 
 if not na(pl)
     int curBarL = bar_index - swingLen
-    if showLiq and not na(lastPL) and math.abs(pl - lastPL) <= eqThresh
+    if showLiq and not na(lastPL) and math.abs(pl - lastPL) <= nz(eqThresh)
         line.new(lastPLbar, lastPL, curBarL, pl, color=color.new(color.fuchsia, 0), style=line.style_dotted, width=1)
         label.new(curBarL, pl, "EQL 💧", style=label.style_label_up, color=color.new(color.fuchsia, 70), textcolor=color.fuchsia, size=size.tiny)
     lastPL    := pl
     lastPLbar := curBarL
 
-// ============================================================================
-//  5. HTF BIAS FILTER (Multi-Timeframe)
-// ============================================================================
-htfClose = request.security(syminfo.tickerid, htfTf, close,                 lookahead=barmerge.lookahead_off)
+// ===================== 5. HTF BIAS FILTER ==================================
+htfClose = request.security(syminfo.tickerid, htfTf, close,                    lookahead=barmerge.lookahead_off)
 htfEma   = request.security(syminfo.tickerid, htfTf, ta.ema(close, htfEmaLen), lookahead=barmerge.lookahead_off)
-htfBull  = htfClose > htfEma
-htfBear  = htfClose < htfEma
+htfBull  = not na(htfClose) and not na(htfEma) and htfClose > htfEma
+htfBear  = not na(htfClose) and not na(htfEma) and htfClose < htfEma
 
-// ============================================================================
-//  HELPER: cari index Order Block & cek imbalance
-// ============================================================================
+// =================== HELPER: OB index & cek imbalance ======================
 f_bullOBIndex() =>
     int idx = na
     for i = 1 to 30
@@ -200,9 +183,7 @@ f_hasBearImb(n) =>
             found := true
     found
 
-// ============================================================================
-//  SIGNAL FLAGS + penampung zona pemicu (untuk SL/TP)
-// ============================================================================
+// ============== SIGNAL FLAGS + penampung zona untuk SL/TP ==================
 bool  buyRaw     = false
 bool  sellRaw    = false
 float sigZoneTop = na
@@ -283,15 +264,11 @@ while array.size(fvgList) > fvgMax
     Zone oldf = array.shift(fvgList)
     box.delete(oldf.bx)
 
-// ============================================================================
-//  GATING : terapkan filter HTF Bias
-// ============================================================================
+// ===================== GATING : filter HTF Bias ============================
 buySignal  = buyRaw  and (not useHTF or htfBull)
 sellSignal = sellRaw and (not useHTF or htfBear)
 
-// ============================================================================
-//  7. AUTO SL / TP
-// ============================================================================
+// ========================= 7. AUTO SL / TP =================================
 fmt = "#.##"
 float entry = na
 float sl    = na
@@ -307,21 +284,10 @@ if sellSignal
     tp    := entry - rr * (sl - entry)
 
 if showLevels and (buySignal or sellSignal)
-    string lvTxt = (buySignal ? "BUY" : "SELL") +
-         "\nEntry: " + str.tostring(entry, fmt) +
-         "\nSL: "    + str.tostring(sl, fmt) +
-         "\nTP: "    + str.tostring(tp, fmt)
-    label.new(bar_index, buySignal ? low : high, lvTxt,
-         style = buySignal ? label.style_label_up : label.style_label_down,
-         color = buySignal ? color.new(color.green, 20) : color.new(color.red, 20),
-         textcolor = color.white, size = size.small)
+    string lvTxt = (buySignal ? "BUY" : "SELL") + "\nEntry: " + str.tostring(entry, fmt) + "\nSL: " + str.tostring(sl, fmt) + "\nTP: " + str.tostring(tp, fmt)
+    label.new(bar_index, buySignal ? low : high, lvTxt, style = buySignal ? label.style_label_up : label.style_label_down, color = buySignal ? color.new(color.green, 20) : color.new(color.red, 20), textcolor = color.white, size = size.small)
 
-// ============================================================================
-//  WIN-RATE COUNTER : resolusi trade (mini-backtest)
-// ============================================================================
-// Cek trade terbuka dulu memakai high/low bar ini. Bila SL & TP tersentuh di
-// bar yang sama -> dihitung LOSS (konservatif). Trade baru dicatat SETELAH
-// pengecekan ini agar bar entry tidak langsung di-resolve.
+// =================== WIN-RATE COUNTER : resolusi trade =====================
 if showStats and array.size(trades) > 0
     int k = 0
     while k < array.size(trades)
@@ -351,9 +317,7 @@ if showStats and buySignal
 if showStats and sellSignal
     array.push(trades, Trade.new(false, sl, tp))
 
-// ============================================================================
-//  8. VISUAL SINYAL + PANEL INFO
-// ============================================================================
+// =================== 8. VISUAL SINYAL + PANEL ==============================
 plotshape(buySignal,  title="BUY Signal",  style=shape.triangleup,
      location=location.belowbar, color=color.new(color.lime, 0), size=size.small)
 plotshape(sellSignal, title="SELL Signal", style=shape.triangledown,
@@ -377,29 +341,14 @@ if barstate.islast
     table.cell(info, 0, 3, "Win%",  text_color=color.white, bgcolor=color.new(color.black, 20), text_size=size.small)
     table.cell(info, 1, 3, str.tostring(wRate, "#.#") + "%", text_color=color.white, bgcolor=wCol, text_size=size.small)
 
-// ============================================================================
-//  9. ALERTS (Webhook Telegram)
-// ============================================================================
-alertcondition(buySignal,  title="XAUUSD SMC - BUY",
-     message="[⚠️ XAUUSD SMC SIGNAL]\nType: BUY\nPrice: {{close}}\nTimeframe: {{interval}}\nNote: Harga telah memitigasi Zone OB/FVG (searah HTF). Cek chart untuk konfirmasi manual.")
-
-alertcondition(sellSignal, title="XAUUSD SMC - SELL",
-     message="[⚠️ XAUUSD SMC SIGNAL]\nType: SELL\nPrice: {{close}}\nTimeframe: {{interval}}\nNote: Harga telah memitigasi Zone OB/FVG (searah HTF). Cek chart untuk konfirmasi manual.")
+// =================== 9. ALERTS (Webhook Telegram) ==========================
+alertcondition(buySignal,  title="XAUUSD SMC - BUY",  message="[⚠️ XAUUSD SMC SIGNAL]\nType: BUY\nPrice: {{close}}\nTimeframe: {{interval}}\nNote: Harga telah memitigasi Zone OB/FVG (searah HTF). Cek chart untuk konfirmasi manual.")
+alertcondition(sellSignal, title="XAUUSD SMC - SELL", message="[⚠️ XAUUSD SMC SIGNAL]\nType: SELL\nPrice: {{close}}\nTimeframe: {{interval}}\nNote: Harga telah memitigasi Zone OB/FVG (searah HTF). Cek chart untuk konfirmasi manual.")
 
 alertFreq = oncePerBarClose ? alert.freq_once_per_bar_close : alert.freq_once_per_bar
 
 if buySignal
-    alert("[⚠️ XAUUSD SMC SIGNAL]\nType: BUY\nPrice: " + str.tostring(close, fmt) +
-         "\nTimeframe: " + timeframe.period +
-         "\nEntry: " + str.tostring(entry, fmt) +
-         "\nSL: "    + str.tostring(sl, fmt) +
-         "\nTP: "    + str.tostring(tp, fmt) + "  (RR 1:" + str.tostring(rr) + ")" +
-         "\nNote: Mitigasi Zone OB/FVG searah HTF. Konfirmasi manual sebelum entry.", alertFreq)
+    alert("[⚠️ XAUUSD SMC SIGNAL]\nType: BUY\nPrice: " + str.tostring(close, fmt) + "\nTimeframe: " + timeframe.period + "\nEntry: " + str.tostring(entry, fmt) + "\nSL: " + str.tostring(sl, fmt) + "\nTP: " + str.tostring(tp, fmt) + "  (RR 1:" + str.tostring(rr) + ")\nNote: Mitigasi Zone OB/FVG searah HTF. Konfirmasi manual sebelum entry.", alertFreq)
 
 if sellSignal
-    alert("[⚠️ XAUUSD SMC SIGNAL]\nType: SELL\nPrice: " + str.tostring(close, fmt) +
-         "\nTimeframe: " + timeframe.period +
-         "\nEntry: " + str.tostring(entry, fmt) +
-         "\nSL: "    + str.tostring(sl, fmt) +
-         "\nTP: "    + str.tostring(tp, fmt) + "  (RR 1:" + str.tostring(rr) + ")" +
-         "\nNote: Mitigasi Zone OB/FVG searah HTF. Konfirmasi manual sebelum entry.", alertFreq)
+    alert("[⚠️ XAUUSD SMC SIGNAL]\nType: SELL\nPrice: " + str.tostring(close, fmt) + "\nTimeframe: " + timeframe.period + "\nEntry: " + str.tostring(entry, fmt) + "\nSL: " + str.tostring(sl, fmt) + "\nTP: " + str.tostring(tp, fmt) + "  (RR 1:" + str.tostring(rr) + ")\nNote: Mitigasi Zone OB/FVG searah HTF. Konfirmasi manual sebelum entry.", alertFreq)
