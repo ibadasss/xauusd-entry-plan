@@ -59,7 +59,7 @@ xauusd-entry-plan/
 ## 🔔 Cara Aktifkan Alert (Webhook Telegram)
 
 1. Klik ikon **Alerts → Create Alert**.
-2. **Condition**: pilih `XAU SMC v2.4` → **"Any alert() function call"**.
+2. **Condition**: pilih `XAU SMC v2.5` → **"Any alert() function call"**.
 3. **Trigger**: **Once Per Bar Close** (anti-repaint).
 4. Tab **Notifications** → centang **Webhook URL** → isi URL relay/bot Telegram Anda.
 5. Klik **Create**. Pesan terisi otomatis (BUY/SELL + harga + Entry/SL/TP).
