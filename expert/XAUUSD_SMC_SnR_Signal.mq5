@@ -2,7 +2,7 @@
 //|                                   XAUUSD_SMC_SnR_Signal.mq5       |
 //|              Signal-only EA (NO auto-entry) for XAU/USD           |
 //|                                                                  |
-//|  REVISI v3.0:                                                    |
+//|  REVISI v3.1:                                                    |
 //|   - Jalur A (SMC) : BOS/CHoCH (anti-repaint, close) -> retrace   |
 //|                     -> mitigasi Order Block ber-FVG.             |
 //|   - Jalur B (SnR) : level Support/Resistance horizontal kuat     |
@@ -11,13 +11,14 @@
 //|   - 24 jam nonstop (TANPA session filter).                       |
 //|   - TP DINAMIS ke key-level berikutnya; RR dihitung otomatis.    |
 //|   - SL konsisten 30-60 pips (geser entry bila terlalu lebar).    |
+//|   - ANTI-SPIKE: ATR SL buffer + filter candle spike + rejection. |
 //|   - Deduplikasi: anti kirim sinyal sama berulang di zona sama.   |
 //|   - Tes koneksi Telegram di OnInit() (untuk cek token/chat id).  |
 //|   - Notifikasi Telegram via WebRequest.                          |
 //+------------------------------------------------------------------+
 #property copyright "XAUUSD Entry Plan"
 #property link      "https://github.com/ibadasss/xauusd-entry-plan"
-#property version   "3.00"
+#property version   "3.10"
 #property strict
 
 //==================================================================
@@ -47,6 +48,15 @@ input double InpSLBufferPips    = 3.0;            // Buffer SL di luar zona (pip
 input group "=== Take Profit Dinamis ==="
 input double InpMinRR          = 1.0;             // RR minimal agar sinyal dikirim
 input int    InpKeyLevelScan   = 200;             // Bar di-scan utk cari key-level TP
+
+input group "=== Anti-Spike & Sweep Protection ==="
+input int    InpATRPeriod      = 14;              // Periode ATR (volatilitas)
+input bool   InpUseATRSLBuffer = true;            // Tambah jarak SL di luar zona (anti-sweep)
+input double InpATRSLMult      = 0.6;             // Buffer SL = ATR x nilai ini (di luar zona)
+input bool   InpUseSpikeFilter = true;            // Batalkan sinyal saat candle spike abnormal
+input double InpSpikeATRMult   = 2.5;             // Spike bila range candle > ATR x nilai ini
+input bool   InpUseConfirmCandle = true;          // Wajib candle rejection (close berbalik)
+input double InpRejectFrac     = 0.5;             // Min porsi close thd range (0..1) utk rejection
 
 input group "=== Anti Over-Trading ==="
 input int    InpCooldownBars   = 5;               // Cooldown antar sinyal (bar)
@@ -96,6 +106,9 @@ int      g_dedupDir[];            // DIR_BUY / DIR_SELL
 double   g_dedupRef[];            // harga referensi zona (sumbu zona/level)
 int      g_dedupBar[];            // Bars() saat sinyal dikirim (utk expiry)
 
+// ATR handle (volatilitas utk anti-spike & SL buffer)
+int      g_atrHandle = INVALID_HANDLE;
+
 //==================================================================
 //  UTIL
 //==================================================================
@@ -103,6 +116,38 @@ double PipsToPrice(double pips){ return pips * InpPipSize; }
 double PriceToPips(double price){ return (InpPipSize>0 ? price / InpPipSize : 0.0); }
 
 string DirText(int dir){ return (dir==DIR_BUY ? "BUY" : "SELL"); }
+
+//--- nilai ATR pada bar tertutup (shift=1); 0 bila belum siap
+double ATRValue()
+{
+   if(g_atrHandle==INVALID_HANDLE) return 0.0;
+   double buf[];
+   if(CopyBuffer(g_atrHandle, 0, 1, 1, buf) <= 0) return 0.0;
+   return buf[0];
+}
+
+//--- true bila candle (shift=1) abnormal/spike: range > ATR x mult
+bool IsSpikeCandle()
+{
+   if(!InpUseSpikeFilter) return false;
+   double atr = ATRValue();
+   if(atr<=0) return false;                 // ATR belum siap -> jangan blokir
+   double range = HighAt(1) - LowAt(1);
+   return (range > atr * InpSpikeATRMult);
+}
+
+//--- true bila candle (shift=1) menunjukkan rejection searah trade.
+//    BUY: close berada di paro ATAS range (menolak harga rendah).
+//    SELL: close berada di paro BAWAH range (menolak harga tinggi).
+bool IsRejectionOK(int dir)
+{
+   if(!InpUseConfirmCandle) return true;
+   double range = HighAt(1) - LowAt(1);
+   if(range<=0) return false;
+   double posFromLow = (CloseAt(1) - LowAt(1)) / range;   // 0..1
+   if(dir==DIR_BUY)  return posFromLow >= InpRejectFrac;   // close di atas
+   return posFromLow <= (1.0 - InpRejectFrac);             // close di bawah
+}
 
 //+------------------------------------------------------------------+
 //| Kirim pesan ke Telegram via WebRequest                           |
@@ -382,7 +427,13 @@ double NextKeyLevelSnR(int dir, double entry)
 bool ApplyRisk(int dir, double rawEntry, double zoneTop, double zoneBot,
                double &entryOut, double &slOut, double &slPipsOut)
 {
+   // Buffer SL = max(buffer pips tetap, ATR x mult) -> beri ruang dari sweep/spike
    double buf = PipsToPrice(InpSLBufferPips);
+   if(InpUseATRSLBuffer)
+   {
+      double atr = ATRValue();
+      if(atr>0) buf = MathMax(buf, atr * InpATRSLMult);
+   }
    double e   = rawEntry;
    double s   = (dir==DIR_BUY) ? (zoneBot - buf) : (zoneTop + buf);
    double dist= MathAbs(e - s);
@@ -482,7 +533,7 @@ void EvaluateSMC()
    {
       bool fresh = (barsNow - g_obBullBar) <= InpZoneMaxAge;
       bool touch = (LowAt(1) <= g_obBullTop && HighAt(1) >= g_obBullBot);
-      if(fresh && touch)
+      if(fresh && touch && !IsSpikeCandle() && IsRejectionOK(DIR_BUY))
       {
          double entry = CloseAt(1);
          double e,s,sp;
@@ -507,7 +558,7 @@ void EvaluateSMC()
    {
       bool fresh = (barsNow - g_obBearBar) <= InpZoneMaxAge;
       bool touch = (LowAt(1) <= g_obBearTop && HighAt(1) >= g_obBearBot);
-      if(fresh && touch)
+      if(fresh && touch && !IsSpikeCandle() && IsRejectionOK(DIR_SELL))
       {
          double entry = CloseAt(1);
          double e,s,sp;
@@ -537,6 +588,9 @@ void EvaluateSnR()
    double lowerWick = bodyLo - l;     // ekor bawah
    double upperWick = h - bodyHi;     // ekor atas
    double minWick = PipsToPrice(InpRejectionPips);
+
+   // Saat candle spike abnormal (mis. news), jangan ambil sinyal SnR sama sekali
+   if(IsSpikeCandle()) return;
 
    // BUY @ Support: candle bullish dgn ekor bawah panjang menyentuh support kuat
    if(c>o && lowerWick>=minWick)
@@ -601,7 +655,13 @@ int OnInit()
    ArrayResize(g_snr,0); ArrayResize(g_snrTouch,0); ArrayResize(g_snrIsRes,0);
    ArrayResize(g_dedupStrat,0); ArrayResize(g_dedupDir,0); ArrayResize(g_dedupRef,0); ArrayResize(g_dedupBar,0);
    g_lastBarCount = Bars(_Symbol,_Period);
-   PrintFormat("XAUUSD SMC+SnR Signal EA v3.0 aktif | SMC=%s SnR=%s | TF=%s",
+
+   // siapkan indikator ATR (anti-spike & SL buffer dinamis)
+   g_atrHandle = iATR(_Symbol, _Period, InpATRPeriod);
+   if(g_atrHandle==INVALID_HANDLE)
+      Print("PERINGATAN: gagal membuat handle ATR. Anti-spike & ATR SL buffer nonaktif.");
+
+   PrintFormat("XAUUSD SMC+SnR Signal EA v3.1 aktif | SMC=%s SnR=%s | TF=%s",
                (InpEnableSMC?"ON":"OFF"), (InpEnableSnR?"ON":"OFF"), EnumToString(_Period));
    if(InpUseTelegram && (InpBotToken=="" || InpChatID==""))
       Print("PERINGATAN: Token/Chat ID Telegram kosong. Isi input agar notifikasi terkirim.");
@@ -613,7 +673,10 @@ int OnInit()
    return(INIT_SUCCEEDED);
 }
 
-void OnDeinit(const int reason){ }
+void OnDeinit(const int reason)
+{
+   if(g_atrHandle!=INVALID_HANDLE) IndicatorRelease(g_atrHandle);
+}
 
 void OnTick()
 {

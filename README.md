@@ -145,7 +145,7 @@ Note: Mitigasi Zone OB/FVG searah HTF. Konfirmasi manual sebelum entry.
 
 File: [`expert/XAUUSD_SMC_SnR_Signal.mq5`](expert/XAUUSD_SMC_SnR_Signal.mq5) — **signal-only** (TIDAK auto-entry/auto-order). Mengirim notifikasi ke Telegram langsung dari MT5 via `WebRequest`.
 
-### Karakter EA (revisi v3.0)
+### Karakter EA (revisi v3.1)
 
 | Aspek | Keterangan |
 |-------|-----------|
@@ -154,6 +154,7 @@ File: [`expert/XAUUSD_SMC_SnR_Signal.mq5`](expert/XAUUSD_SMC_SnR_Signal.mq5) —
 | **TP Dinamis** | TP otomatis ke **key-level berikutnya**: SMC → swing high/low terdekat searah; SnR → garis SnR berikutnya. **RR dihitung otomatis** (mis. SL 40 pips, jarak TP 80 pips → ditulis `1:2`). |
 | **SL 30–60 pips** | <30 pips → digenapkan 30. >60 pips → entry digeser (SMC: 50% OB; SnR: lebih dekat ke sumbu level). Jika tetap >60 → **sinyal dibatalkan**. |
 | **Anti-repaint** | Evaluasi hanya pada **bar tertutup** (shift=1) dan diproses sekali per bar baru. |
+| **Anti-spike & sweep** | Tiga lapis (v3.1): **ATR SL buffer** (SL diberi ruang di luar zona sebesar `ATR x InpATRSLMult` agar tahan sweep), **spike filter** (batalkan sinyal saat range candle > `ATR x InpSpikeATRMult` — ciri news/spike), dan **rejection candle** (close wajib berbalik ke arah trade). |
 | **Deduplikasi sinyal** | Anti kirim sinyal **sama berulang di zona yang sama**: tiap sinyal disidik-jari (strategi + arah + harga referensi zona/level) dan disimpan dalam memori berbatas umur (`InpDedupExpiryBars`). Sinyal sejenis dalam toleransi `InpDedupPips` di-skip. |
 ### ⚙️ Cara Pasang di MetaTrader 5
 
@@ -184,6 +185,9 @@ File: [`expert/XAUUSD_SMC_SnR_Signal.mq5`](expert/XAUUSD_SMC_SnR_Signal.mq5) —
 | `InpPipSize` | `0.10` untuk XAUUSD (10 pips = $1.00) — sesuaikan dgn broker |
 | `InpMinSLPips` / `InpMaxSLPips` | `30` / `60` (default) |
 | `InpMinRR` | RR minimal agar sinyal dikirim (default `1.0`) |
+| `InpUseATRSLBuffer` / `InpATRSLMult` | Beri ruang SL di luar zona = `ATR x mult` (default `0.6`) — **kunci anti-sweep** |
+| `InpUseSpikeFilter` / `InpSpikeATRMult` | Batalkan sinyal saat range candle > `ATR x mult` (default `2.5`) — hindari news/spike |
+| `InpUseConfirmCandle` / `InpRejectFrac` | Wajib candle rejection; porsi close thd range (default `0.5`) |
 | `InpUseDedup` | Aktifkan deduplikasi sinyal (default `true`) |
 | `InpDedupPips` | Jarak min antar sinyal sejenis agar tak dianggap duplikat (default `25` pips) |
 | `InpDedupExpiryBars` | Umur memori dedup dalam bar; `0` = ingat selamanya (default `300`) |
